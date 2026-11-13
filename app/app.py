@@ -7,7 +7,7 @@ from tkinter import filedialog, messagebox
 
 APP = "르니톡"
 VERSION = "1.0.0"  # 깃허브 릴리스 빌드 때 태그(v1.2.3)로 자동 교체됨
-REPO = "junhwan5130/leunitalk"
+REPO = "balohani/leunitalk"
 EXE_NAME = "LeuniTalk.exe"
 PORT = 17777
 MAXLEN = 100
