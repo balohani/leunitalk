@@ -1,9 +1,8 @@
-# VERSION 파일의 숫자를 올려서 main 에 push 하면, 윈도우에서 LeuniTalk.exe 를 빌드해 깃허브 릴리스(v버전)에 자동 업로드
+# main 에 push 될 때마다 실행. VERSION 의 버전(v버전) 릴리스가 아직 없으면 윈도우에서 LeuniTalk.exe 를 빌드해 깃허브 릴리스에 자동 업로드, 이미 있으면 건너뜀
 name: release
 on:
   push:
     branches: [main]
-    paths: [VERSION]
   workflow_dispatch:
 permissions:
   contents: write
