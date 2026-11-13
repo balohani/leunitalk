@@ -37,7 +37,23 @@ def save_cfg(c):
 cfg = load_cfg()
 q: "queue.Queue[str]" = queue.Queue()
 log_q: "queue.Queue[str]" = queue.Queue()
-status = {"wow": False, "ext_last": 0.0}
+status = {"wow": False, "ext_last": 0.0, "ext_bj": "", "ext_target_last": 0.0}
+DEFAULT_BJ = "leuni158"  # 르니 방송 아이디
+
+
+def target_bj():
+    return (cfg.get("bj") or DEFAULT_BJ).strip().lower()
+
+
+def parse_bj(text):
+    """방송 주소나 아이디에서 BJ 아이디만 뽑기 (예: https://play.sooplive.co.kr/leuni158/123 → leuni158)"""
+    t = (text or "").strip()
+    if "sooplive" in t or "afreecatv" in t:
+        t = t.split("://", 1)[-1].split("/", 1)[-1] if "/" in t else t
+    parts = [x for x in t.split("?")[0].split("/") if x]
+    if parts and parts[0] == "station" and len(parts) > 1:
+        parts = parts[1:]
+    return parts[0].lower() if parts else ""
 
 
 def log(s):
@@ -306,13 +322,19 @@ def apply_update(url):
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/poll"):
-            status["ext_last"] = time.time()
+            from urllib.parse import urlparse, parse_qs
+            bj = (parse_qs(urlparse(self.path).query).get("bj", [""])[0] or "").lower()
+            now = time.time()
+            status["ext_last"] = now
+            status["ext_bj"] = bj
             msgs = []
-            while True:
-                try:
-                    msgs.append(q.get_nowait())
-                except queue.Empty:
-                    break
+            if bj == target_bj():  # 연결한 방송 탭에만 메시지를 넘김
+                status["ext_target_last"] = now
+                while True:
+                    try:
+                        msgs.append(q.get_nowait())
+                    except queue.Empty:
+                        break
             body = json.dumps({"messages": msgs, "version": VERSION}, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -338,14 +360,23 @@ class App:
             root.iconbitmap(str(res("leuni.ico")))
         except Exception:
             pass
-        root.geometry("460x360")
+        root.geometry("520x430")
         pad = {"padx": 10, "pady": 3, "anchor": "w"}
         self.wow_lbl = tk.Label(root, text="와우: 확인 중", font=("맑은 고딕", 10)); self.wow_lbl.pack(**pad)
         self.ext_lbl = tk.Label(root, text="크롬 확장: 확인 중", font=("맑은 고딕", 10)); self.ext_lbl.pack(**pad)
         self.addon_lbl = tk.Label(root, text="애드온: -", font=("맑은 고딕", 9), fg="#555"); self.addon_lbl.pack(**pad)
 
+        bjrow = tk.Frame(root); bjrow.pack(fill="x", padx=10, pady=(6, 2))
+        tk.Label(bjrow, text="연결할 방송", font=("맑은 고딕", 10, "bold")).pack(side="left")
+        self.bj_entry = tk.Entry(bjrow, font=("맑은 고딕", 10), width=22)
+        self.bj_entry.insert(0, target_bj()); self.bj_entry.pack(side="left", padx=6)
+        self.bj_entry.bind("<Return>", lambda e: self.connect_bj())
+        tk.Button(bjrow, text="연결 + 방송 열기", command=self.connect_bj).pack(side="left")
+        tk.Label(root, text="방송 아이디나 방송 주소를 넣으세요 (예: leuni158). 그 방송 탭에만 채팅이 가요.",
+                 font=("맑은 고딕", 8), fg="#777").pack(padx=10, anchor="w")
+
         row = tk.Frame(root); row.pack(fill="x", padx=10, pady=4)
-        tk.Button(row, text="크롬 확장 설치하기", command=self.guide_extension).pack(side="left")
+        tk.Button(row, text="크롬 확장 설치 방법", command=self.guide_extension).pack(side="left")
         tk.Button(row, text="와우 폴더 다시 선택", command=self.choose_wow).pack(side="left", padx=6)
         self.auto = tk.BooleanVar(value=bool(cfg.get("autostart", False)))
         tk.Checkbutton(row, text="윈도우 시작 시 자동 실행", variable=self.auto, command=self.toggle_auto).pack(side="left")
@@ -381,7 +412,7 @@ class App:
             dst = install_addon(wd)
             cfg["wowdir"] = wd; save_cfg(cfg)
             self.addon_lbl.config(text=f"애드온: 설치됨 ({dst})", fg="#555")
-            log("와우 애드온(SoopBridge) 설치/업데이트 완료. 와우를 껐다 켜면 '숲 채팅' 창이 생겨요.")
+            log("와우 애드온(SoopBridge) 설치/업데이트 완료. 와우를 껐다 켜면 '르니톡' 창이 생겨요.")
         except PermissionError:
             self.addon_lbl.config(text="애드온: 설치 권한 없음 → 이 프로그램을 '관리자 권한으로 실행' 해 주세요", fg="#c00")
 
@@ -390,23 +421,58 @@ class App:
         if wd:
             cfg["wowdir"] = wd; save_cfg(cfg); self.setup_addon()
 
+    def connect_bj(self):
+        bj = parse_bj(self.bj_entry.get())
+        if not bj:
+            messagebox.showinfo(APP, "방송 아이디를 넣어 주세요. 예: leuni158")
+            return
+        cfg["bj"] = bj; save_cfg(cfg)
+        self.bj_entry.delete(0, "end"); self.bj_entry.insert(0, bj)
+        url = f"https://play.sooplive.co.kr/{bj}"
+        log(f"연결할 방송: {bj}")
+        try:
+            subprocess.Popen(["cmd", "/c", "start", "", "chrome", url], creationflags=0x08000000)
+        except Exception:
+            import webbrowser
+            webbrowser.open(url)
+
+    def copy(self, text, what):
+        self.root.clipboard_clear(); self.root.clipboard_append(text); self.root.update()
+        log(f"{what} 복사했어요. 붙여넣기(Ctrl+V) 하세요.")
+
     def guide_extension(self):
         ext = install_extension_files()
         cfg["ext_guided"] = True; save_cfg(cfg)
-        messagebox.showinfo(APP, "크롬 확장 설치 (처음 한 번만)\n\n"
-                                 "1. 지금 열리는 크롬 '확장 프로그램' 화면에서 오른쪽 위 '개발자 모드'를 켜요\n"
-                                 "2. '압축해제된 확장 프로그램을 로드합니다'를 누르고\n"
-                                 "3. 같이 열리는 폴더(크롬확장)를 선택해요\n"
-                                 "4. 보고 있던 숲 방송 탭을 새로고침(F5)\n\n"
-                                 "※ 크롬 웹스토어 등록 후에는 '추가' 버튼 한 번으로 바뀔 예정이에요.")
+        if getattr(self, "guide_win", None) and self.guide_win.winfo_exists():
+            self.guide_win.lift(); return
+        w = tk.Toplevel(self.root); self.guide_win = w
+        w.title("크롬 확장 설치 방법 (처음 한 번만)")
         try:
-            os.startfile(str(ext))
+            w.iconbitmap(str(res("leuni.ico")))
         except Exception:
             pass
-        try:
-            subprocess.Popen(["cmd", "/c", "start", "", "chrome", "chrome://extensions"], creationflags=0x08000000)
-        except Exception:
-            pass
+        w.geometry("560x470")
+        H = ("맑은 고딕", 12, "bold"); T = ("맑은 고딕", 10)
+
+        def step(n, title, desc, buttons=()):
+            f = tk.Frame(w, bd=1, relief="groove"); f.pack(fill="x", padx=12, pady=5)
+            tk.Label(f, text=f"{n}. {title}", font=H, anchor="w").pack(fill="x", padx=8, pady=(6, 0))
+            tk.Label(f, text=desc, font=T, fg="#444", justify="left", anchor="w", wraplength=500).pack(fill="x", padx=8, pady=(2, 4))
+            if buttons:
+                bf = tk.Frame(f); bf.pack(fill="x", padx=8, pady=(0, 8))
+                for label, cmd in buttons:
+                    tk.Button(bf, text=label, command=cmd).pack(side="left", padx=(0, 6))
+
+        step(1, "크롬 확장 화면 열기",
+             "아래 버튼을 누르고, 크롬 새 탭 주소창에 붙여넣기(Ctrl+V) → 엔터\n(보안 때문에 프로그램이 이 화면을 직접 못 열어요)",
+             [("chrome://extensions 주소 복사", lambda: self.copy("chrome://extensions", "확장 화면 주소를"))])
+        step(2, "'개발자 모드' 켜기", "확장 화면 오른쪽 위의 '개발자 모드' 스위치를 켜요.")
+        step(3, "'압축해제된 확장 프로그램을 로드합니다' 클릭",
+             "폴더 선택 창이 뜨면, 아래 버튼으로 폴더 경로를 복사해서 폴더 선택 창 맨 위 주소칸에 붙여넣기 → 엔터 → '폴더 선택'",
+             [("폴더 경로 복사", lambda: self.copy(str(ext), "확장 폴더 경로를")),
+              ("폴더 열어보기", lambda: os.startfile(str(ext)))])
+        step(4, "끝!", "숲 방송 탭은 새로고침하지 않아도 자동으로 연결돼요.\n이 창은 언제든 '크롬 확장 설치 방법' 버튼으로 다시 열 수 있어요.")
+        tk.Button(w, text="닫기", command=w.destroy, width=10).pack(pady=8)
 
     def ask_update(self, latest, url, notes):
         msg = f"새 버전 {latest} 이 있어요 (지금 {VERSION}).\n\n{notes[:400]}\n\n지금 업데이트할까요? 끝나면 자동으로 다시 켜져요."
@@ -432,9 +498,15 @@ class App:
     def tick(self):
         self.wow_lbl.config(text="와우: 연결됨 ✅" if status["wow"] else "와우: 창을 못 찾음 (와우를 창 모드/전체 창 모드로 켜 주세요)",
                             fg="#080" if status["wow"] else "#c60")
-        ext_ok = time.time() - status["ext_last"] < 3
-        self.ext_lbl.config(text="크롬 확장: 연결됨 ✅ (숲 방송 탭 열림)" if ext_ok else "크롬 확장: 숲 방송 탭이 없거나 확장이 꺼져 있음",
-                            fg="#080" if ext_ok else "#c60")
+        now = time.time()
+        tgt = target_bj()
+        if now - status["ext_target_last"] < 3:
+            txt, col = f"크롬 확장: {tgt} 방송에 연결됨 ✅", "#080"
+        elif now - status["ext_last"] < 3:
+            txt, col = f"크롬 확장: 숲 탭은 열려 있지만 {tgt} 방송이 아니에요 (위에서 '연결 + 방송 열기')", "#c60"
+        else:
+            txt, col = "크롬 확장: 숲 방송 탭이 없거나 확장이 설치/켜져 있지 않아요", "#c60"
+        self.ext_lbl.config(text=txt, fg=col)
         while True:
             try:
                 line = log_q.get_nowait()

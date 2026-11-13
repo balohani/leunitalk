@@ -77,7 +77,8 @@ function stopIfOrphaned() {
 function poll() {
   if (stopIfOrphaned()) return;
   try {
-    chrome.runtime.sendMessage({ type: "poll" }, (res) => {
+    const bj = (location.pathname.split("/").filter(Boolean)[0] || "").toLowerCase();
+    chrome.runtime.sendMessage({ type: "poll", bj }, (res) => {
       if (chrome.runtime.lastError) return;
       if (res && res.messages) pending.push(...res.messages);
     });
