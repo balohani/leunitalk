@@ -14,4 +14,4 @@
 - `app/` PC 프로그램 (와우 화면 신호 읽기 + 크롬 확장 중계)
 - `addon/SoopBridge/` 와우 애드온
 - `extension/` 크롬 확장
-- 새 버전 배포: `git tag v1.0.1 && git push --tags` → GitHub Actions가 exe를 빌드해 릴리스에 올림
+- 새 버전 배포: `VERSION` 파일 숫자를 올려서 main 에 push → GitHub Actions가 exe를 빌드해 릴리스(v버전)에 올림
