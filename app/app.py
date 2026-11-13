@@ -314,7 +314,13 @@ def apply_update(url):
         f"move /y \"{new}\" \"{cur}\" >nul\r\n"
         f"start \"\" \"{cur}\"\r\n"
         "del \"%~f0\"\r\n", encoding="mbcs" if os.name == "nt" else "utf-8")
-    subprocess.Popen(["cmd", "/c", str(bat)], creationflags=0x08000000)
+    # 새로 켜질 exe가 지금 프로세스의 임시 폴더(_MEI…)를 이어받지 않게 환경을 초기화
+    env = dict(os.environ)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    for k in list(env):
+        if k.startswith("_PYI") or k.startswith("_MEI"):
+            env.pop(k, None)
+    subprocess.Popen(["cmd", "/c", str(bat)], creationflags=0x08000000, env=env)
     os._exit(0)
 
 
