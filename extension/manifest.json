@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "르니톡",
+  "version": "1.0.0",
+  "description": "와우에서 친 말을 지금 보고 있는 숲 방송 채팅에 입력해 주는 르니 팬 제작 도구",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "http://127.0.0.1:17777/*",
+    "https://play.sooplive.co.kr/*",
+    "https://play.sooplive.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://play.sooplive.co.kr/*",
+        "https://play.sooplive.com/*"
+      ],
+      "js": [
+        "content.js"
+      ]
+    }
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "scripting"
+  ]
+}

@@ -1,0 +1,4 @@
+<Bindings>
+  <Binding name="SOOPBRIDGE_FOCUS" header="SOOPBRIDGE" category="ADDONS">SoopBridge_Focus()</Binding>
+  <Binding name="SOOPBRIDGE_TOGGLE" category="ADDONS">SoopBridge_Toggle()</Binding>
+</Bindings>

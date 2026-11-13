@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: LeuniTalk
+## Title-koKR: 르니톡
+## Notes: 와우 안의 작은 창에서 친 말을 숲 방송 채팅으로 보냅니다 (PC 프로그램 '와우숲채팅' + 크롬 확장과 함께 사용). /숲
+## Author: 준환
+## Version: 2.0
+## SavedVariables: SoopBridgeDB
+SoopBridge.lua
