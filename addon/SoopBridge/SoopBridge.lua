@@ -6,8 +6,10 @@ BINDING_HEADER_SOOPBRIDGE = "르니톡"
 BINDING_NAME_SOOPBRIDGE_FOCUS = "르니톡 입력하기"
 BINDING_NAME_SOOPBRIDGE_TOGGLE = "르니톡 창 열기/닫기"
 
-local DEFAULTS = { shown = true, point = { "BOTTOMLEFT", "UIParent", "BOTTOMLEFT", 20, 260 }, w = 320, h = 150 }
-local db, frame, history, input
+local DEFAULTS = { shown = true, point = { "BOTTOMLEFT", "UIParent", "BOTTOMLEFT", 20, 260 }, w = 320, h = 150,
+    btnShown = true, btnPoint = { "CENTER", "UIParent", "CENTER", -360, -120 } }
+local ICON = "Interface\\AddOns\\SoopBridge\\leuni"
+local db, frame, history, input, floatBtn
 
 -- ===== 화면 신호(픽셀) 전송 =====
 -- 와우 채팅 기록 파일은 실시간으로 쓰이지 않아서, 보낼 말을 화면 왼쪽 위 작은 색 블록으로 잠깐 그리고
@@ -116,9 +118,12 @@ local function build()
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", function(self) self:StopMovingOrSizing(); savePos() end)
 
+    local icon = frame:CreateTexture(nil, "OVERLAY")
+    icon:SetSize(16, 16); icon:SetPoint("TOPLEFT", 5, -3)
+    icon:SetTexture(ICON)
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    title:SetPoint("TOPLEFT", 6, -5)
-    title:SetText("|cffc39bf5르니톡|r  (드래그로 이동)")
+    title:SetPoint("LEFT", icon, "RIGHT", 4, 0)
+    title:SetText("|cffc39bf5르니톡|r  |cff888888(드래그로 이동)|r")
 
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetSize(20, 20); close:SetPoint("TOPRIGHT", 1, 1)
@@ -150,13 +155,13 @@ local function build()
 
     local hint = input:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("LEFT", 6, 0)
-    hint:SetText("여기를 클릭하고 입력 → 엔터로 르니 방송 채팅 전송")
+    hint:SetText("여기를 클릭하고 입력 → 엔터로 방송 채팅 전송")
     input:SetScript("OnTextChanged", function(self) hint:SetShown(self:GetText() == "" and not self:HasFocus()) end)
     input:HookScript("OnEditFocusGained", function() hint:Hide() end)
     input:HookScript("OnEditFocusLost", function(self) hint:SetShown(self:GetText() == "") end)
 
     history = CreateFrame("ScrollingMessageFrame", nil, frame)
-    history:SetPoint("TOPLEFT", 6, -20); history:SetPoint("BOTTOMRIGHT", input, "TOPRIGHT", 12, 4)
+    history:SetPoint("TOPLEFT", 6, -22); history:SetPoint("BOTTOMRIGHT", input, "TOPRIGHT", 12, 4)
     history:SetFontObject(ChatFontNormal)
     history:SetJustifyH("LEFT")
     history:SetFading(false)
@@ -165,6 +170,40 @@ local function build()
     history:SetScript("OnMouseWheel", function(self, d) if d > 0 then self:ScrollUp() else self:ScrollDown() end end)
 
     frame:SetShown(db.shown)
+
+    -- ===== 떠 있는 르니 아이콘 (클릭: 창 열기/닫기, 드래그: 이동, 우클릭: 바로 입력) =====
+    local btn = CreateFrame("Button", "SoopBridgeFloatButton", UIParent)
+    btn:SetSize(40, 40)
+    btn:SetPoint(unpack(db.btnPoint))
+    btn:SetFrameStrata("MEDIUM")
+    btn:SetMovable(true); btn:SetClampedToScreen(true)
+    btn:EnableMouse(true)
+    btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    btn:RegisterForDrag("LeftButton")
+    local tex = btn:CreateTexture(nil, "ARTWORK"); tex:SetAllPoints(); tex:SetTexture(ICON)
+    local hl = btn:CreateTexture(nil, "HIGHLIGHT"); hl:SetAllPoints(); hl:SetTexture(ICON); hl:SetBlendMode("ADD"); hl:SetAlpha(0.35)
+    btn:SetScript("OnDragStart", function(self) self.dragging = true; self:StartMoving() end)
+    btn:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        local p, _, rp, x, y = self:GetPoint()
+        db.btnPoint = { p, "UIParent", rp, x, y }
+        C_Timer.After(0, function() self.dragging = false end)
+    end)
+    btn:SetScript("OnClick", function(self, button)
+        if self.dragging then return end
+        if button == "RightButton" then SoopBridge_Focus() else SoopBridge_Toggle() end
+    end)
+    btn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("|cffc39bf5르니톡|r")
+        GameTooltip:AddLine("클릭: 창 열기/닫기", 1, 1, 1)
+        GameTooltip:AddLine("우클릭: 바로 입력", 1, 1, 1)
+        GameTooltip:AddLine("드래그: 아이콘 옮기기", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    btn:SetShown(db.btnShown)
+    floatBtn = btn
 end
 
 function SoopBridge_Toggle()
@@ -198,6 +237,9 @@ SlashCmdList.SOOPBRIDGE = function(msg)
     msg = strtrim(msg or "")
     if msg == "" then
         SoopBridge_Toggle()
+    elseif msg == "아이콘" or msg == "icon" then
+        db.btnShown = not db.btnShown
+        if floatBtn then floatBtn:SetShown(db.btnShown) end
     else
         send(msg)
     end
