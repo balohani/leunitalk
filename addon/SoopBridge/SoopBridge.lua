@@ -129,6 +129,23 @@ local function build()
     close:SetSize(20, 20); close:SetPoint("TOPRIGHT", 1, 1)
     close:SetScript("OnClick", function() SoopBridge_Toggle() end)
 
+    -- 사용법 버튼 (마우스를 올리면 설명)
+    local help = CreateFrame("Button", nil, frame)
+    help:SetSize(16, 16); help:SetPoint("RIGHT", close, "LEFT", -2, 0)
+    local q = help:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    q:SetPoint("CENTER"); q:SetText("|cffc39bf5?|r")
+    help:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("|cffc39bf5르니톡 사용법|r")
+        GameTooltip:AddLine("|cffffffff/l 할말|r  → 바로 방송 채팅 전송", 0.9, 0.9, 0.9)
+        GameTooltip:AddLine("|cffffffff/l|r  → 입력칸으로 바로 이동", 0.9, 0.9, 0.9)
+        GameTooltip:AddLine("떠 있는 르니 아이콘 우클릭 → 바로 입력", 0.9, 0.9, 0.9)
+        GameTooltip:AddLine("단축키: ESC > 설정 > 단축키 > 애드온 > 르니톡", 0.9, 0.9, 0.9)
+        GameTooltip:AddLine("/르니톡 아이콘 → 떠 있는 아이콘 숨기기/보이기", 0.7, 0.7, 0.7)
+        GameTooltip:Show()
+    end)
+    help:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
     local grip = CreateFrame("Button", nil, frame)
     grip:SetSize(14, 14); grip:SetPoint("BOTTOMRIGHT", -1, 1)
     grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
@@ -168,6 +185,7 @@ local function build()
     history:SetMaxLines(100)
     history:EnableMouseWheel(true)
     history:SetScript("OnMouseWheel", function(self, d) if d > 0 then self:ScrollUp() else self:ScrollDown() end end)
+    history:AddMessage("|cff888888사용법: 채팅창에 |cffffffff/l 할말|cff888888 → 바로 방송 채팅 전송 (자세히는 ? 버튼)|r")
 
     frame:SetShown(db.shown)
 
@@ -231,6 +249,13 @@ f:SetScript("OnEvent", function(_, event, ...)
         build()
     end
 end)
+
+-- 빠른 전송: /l 할말  (뒤에 아무것도 없으면 입력칸으로 이동)
+SLASH_LEUNITALKQUICK1 = "/l"
+SlashCmdList.LEUNITALKQUICK = function(msg)
+    msg = strtrim(msg or "")
+    if msg == "" then SoopBridge_Focus() else send(msg) end
+end
 
 SLASH_SOOPBRIDGE1, SLASH_SOOPBRIDGE2, SLASH_SOOPBRIDGE3 = "/숲", "/르니톡", "/soop"
 SlashCmdList.SOOPBRIDGE = function(msg)
