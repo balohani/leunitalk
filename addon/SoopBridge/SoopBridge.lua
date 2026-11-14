@@ -1,7 +1,5 @@
--- SoopBridge (숲 채팅): 와우 안 작은 채팅창에서 친 말을 개인 채널에 "!숲 ..."으로 보내고,
--- 와우 채팅 기록(WoWChatLog.txt)을 PC 프로그램이 읽어 크롬 확장으로 숲 채팅에 입력한다.
-local CH, PW = "soopbr7q3k", "w0w"
-local TAG = "|cff33ff99숲|r "
+-- 르니톡 (SoopBridge): 와우 안 작은 창에서 친 말을 화면 신호로 PC 프로그램에 넘기면,
+-- 프로그램이 크롬 확장을 통해 숲 방송 채팅으로 보낸다.
 BINDING_HEADER_SOOPBRIDGE = "르니톡"
 BINDING_NAME_SOOPBRIDGE_FOCUS = "르니톡 입력하기"
 BINDING_NAME_SOOPBRIDGE_TOGGLE = "르니톡 창 열기/닫기"
@@ -9,7 +7,7 @@ BINDING_NAME_SOOPBRIDGE_TOGGLE = "르니톡 창 열기/닫기"
 local DEFAULTS = { shown = true, point = { "BOTTOMLEFT", "UIParent", "BOTTOMLEFT", 20, 260 }, w = 320, h = 150,
     btnShown = true, btnPoint = { "CENTER", "UIParent", "CENTER", -360, -120 } }
 local ICON = "Interface\\AddOns\\SoopBridge\\leuni"
-local db, frame, history, input, floatBtn
+local db, frame, history, input, floatBtn, titleText, targetBtn
 
 -- ===== 화면 신호(픽셀) 전송 =====
 -- 와우 채팅 기록 파일은 실시간으로 쓰이지 않아서, 보낼 말을 화면 왼쪽 위 작은 색 블록으로 잠깐 그리고
@@ -87,6 +85,11 @@ local function pump()
     end)
 end
 
+local function sendControl(text)
+    outbox[#outbox + 1] = text
+    pump()
+end
+
 local function send(text)
     text = strtrim(text or "")
     if text == "" then return end
@@ -96,6 +99,67 @@ local function send(text)
     if history then history:AddMessage("|cff999999" .. date("%H:%M") .. "|r " .. text) end
     pump()
     return true
+end
+
+-- ===== 연결한 방송 표시 =====
+-- 와우 애드온은 실행 중에 PC 프로그램한테서 정보를 받을 수 없어서,
+-- 와우에서 바꾸면 바로 표시하고, 프로그램에서 바꾼 건 다음 접속//reload 때 Target.lua 로 받아온다.
+local function targetName(t)
+    if not t or not t.id or t.id == "" then return nil end
+    if t.nick and t.nick ~= "" then return t.nick end
+    return t.id
+end
+
+local function updateTitle()
+    if not titleText then return end
+    local t = db.target
+    local name = targetName(t)
+    local s = "|cffc39bf5르니톡|r  "
+    if not name then
+        s = s .. "|cffff9933방송 선택 (클릭)|r"
+    elseif t.pending then
+        s = s .. "|cffffffff" .. name .. "|r |cff888888방송 연결 요청함|r"
+    else
+        s = s .. "|cffffffff" .. name .. "|r |cff888888방송|r"
+    end
+    titleText:SetText(s)
+    if targetBtn then targetBtn:SetWidth(titleText:GetStringWidth() + 4) end
+end
+
+local function requestTarget(q)
+    q = strtrim(q or "")
+    if q == "" then return end
+    -- 주소를 붙여넣었으면 아이디만
+    local id = q:match("sooplive%.co%.kr/([%w_]+)") or q:match("sooplive%.com/([%w_]+)") or q:match("afreecatv%.com/([%w_]+)")
+    if id == "station" then id = q:match("/station/([%w_]+)") end
+    local show = id or q
+    db.target = { id = show, nick = id and "" or q, t = time(), pending = true }
+    sendControl("\001T" .. q)
+    if history then history:AddMessage("|cffc39bf5방송 연결 요청:|r " .. show .. " |cff888888(PC 프로그램 창에서 결과 확인)|r") end
+    updateTitle()
+end
+
+StaticPopupDialogs["SOOPBRIDGE_TARGET"] = {
+    text = "어느 방송에 채팅을 보낼까요?\n|cff888888닉네임, 숲 아이디, 방송 주소 다 돼요 (예: 르니, leuni158)|r",
+    button1 = "연결", button2 = "취소",
+    hasEditBox = true, maxLetters = 120,
+    OnShow = function(self)
+        local eb = self.editBox or (self.GetEditBox and self:GetEditBox())
+        if eb then eb:SetText(targetName(db.target) or ""); eb:HighlightText(); eb:SetFocus() end
+    end,
+    OnAccept = function(self)
+        local eb = self.editBox or (self.GetEditBox and self:GetEditBox())
+        if eb then requestTarget(eb:GetText()) end
+    end,
+    EditBoxOnEnterPressed = function(self)
+        requestTarget(self:GetText()); self:GetParent():Hide()
+    end,
+    EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
+    timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
+}
+
+function SoopBridge_ChooseTarget()
+    StaticPopup_Show("SOOPBRIDGE_TARGET")
 end
 
 local function savePos()
@@ -121,9 +185,29 @@ local function build()
     local icon = frame:CreateTexture(nil, "OVERLAY")
     icon:SetSize(16, 16); icon:SetPoint("TOPLEFT", 5, -3)
     icon:SetTexture(ICON)
-    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    title:SetPoint("LEFT", icon, "RIGHT", 4, 0)
-    title:SetText("|cffc39bf5르니톡|r  |cff888888(드래그로 이동)|r")
+    -- 제목줄: 르니톡 · 연결한 방송 (클릭하면 방송 바꾸기)
+    targetBtn = CreateFrame("Button", nil, frame)
+    targetBtn:SetPoint("LEFT", icon, "RIGHT", 2, 0)
+    targetBtn:SetHeight(16)
+    targetBtn:RegisterForDrag("LeftButton")
+    targetBtn:SetScript("OnDragStart", function() frame:StartMoving() end)
+    targetBtn:SetScript("OnDragStop", function() frame:StopMovingOrSizing(); savePos() end)
+    titleText = targetBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    titleText:SetPoint("LEFT", 2, 0)
+    targetBtn:SetScript("OnClick", SoopBridge_ChooseTarget)
+    targetBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("|cffc39bf5채팅을 보낼 방송|r")
+        GameTooltip:AddLine("클릭: 방송 바꾸기 (닉네임/아이디/주소)", 1, 1, 1)
+        GameTooltip:AddLine("드래그: 창 이동", 0.7, 0.7, 0.7)
+        if db.target and db.target.id and db.target.id ~= "" and db.target.nick ~= "" and not db.target.pending then
+            GameTooltip:AddLine("숲 아이디: " .. db.target.id, 0.7, 0.7, 0.7)
+        end
+        GameTooltip:AddLine("PC 프로그램에서 바꾼 방송은 /reload 하면 여기 반영돼요", 0.6, 0.6, 0.6, true)
+        GameTooltip:Show()
+    end)
+    targetBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    updateTitle()
 
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetSize(20, 20); close:SetPoint("TOPRIGHT", 1, 1)
@@ -137,10 +221,11 @@ local function build()
     help:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine("|cffc39bf5르니톡 사용법|r")
-        GameTooltip:AddLine("|cffffffff/l 할말|r  → 바로 방송 채팅 전송", 0.9, 0.9, 0.9)
+        GameTooltip:AddLine("|cffffffff/l 할말|r  (한글 자판이면 |cffffffff/ㅣ 할말|r)  → 바로 방송 채팅 전송", 0.9, 0.9, 0.9)
         GameTooltip:AddLine("|cffffffff/l|r  → 입력칸으로 바로 이동", 0.9, 0.9, 0.9)
         GameTooltip:AddLine("떠 있는 르니 아이콘 우클릭 → 바로 입력", 0.9, 0.9, 0.9)
         GameTooltip:AddLine("단축키: ESC > 설정 > 단축키 > 애드온 > 르니톡", 0.9, 0.9, 0.9)
+        GameTooltip:AddLine("제목줄 클릭 또는 |cffffffff/르니톡 방송 닉네임|r → 보낼 방송 바꾸기", 0.9, 0.9, 0.9)
         GameTooltip:AddLine("/르니톡 아이콘 → 떠 있는 아이콘 숨기기/보이기", 0.7, 0.7, 0.7)
         GameTooltip:Show()
     end)
@@ -185,7 +270,7 @@ local function build()
     history:SetMaxLines(100)
     history:EnableMouseWheel(true)
     history:SetScript("OnMouseWheel", function(self, d) if d > 0 then self:ScrollUp() else self:ScrollDown() end end)
-    history:AddMessage("|cff888888사용법: 채팅창에 |cffffffff/l 할말|cff888888 → 바로 방송 채팅 전송 (자세히는 ? 버튼)|r")
+    history:AddMessage("|cff888888사용법: 채팅창에 |cffffffff/l 할말|cff888888 (또는 |cffffffff/ㅣ|cff888888) → 바로 방송 채팅 전송 (자세히는 ? 버튼)|r")
 
     frame:SetShown(db.shown)
 
@@ -246,12 +331,20 @@ f:SetScript("OnEvent", function(_, event, ...)
         SoopBridgeDB = SoopBridgeDB or {}
         for k, v in pairs(DEFAULTS) do if SoopBridgeDB[k] == nil then SoopBridgeDB[k] = v end end
         db = SoopBridgeDB
+        -- PC 프로그램이 마지막으로 연결한 방송 (프로그램에서 바꾼 게 더 최근이면 그걸로)
+        local app = SoopBridge_AppTarget
+        if type(app) == "table" and app.id and app.id ~= "" then
+            local mine = db.target
+            if not mine or not mine.id or (app.t or 0) >= (mine.t or 0) or mine.pending then
+                db.target = { id = app.id, nick = app.nick or "", t = app.t or 0 }
+            end
+        end
         build()
     end
 end)
 
--- 빠른 전송: /l 할말  (뒤에 아무것도 없으면 입력칸으로 이동)
-SLASH_LEUNITALKQUICK1 = "/l"
+-- 빠른 전송: /l 할말 (한글 자판 그대로 /ㅣ 도 됨, 뒤에 아무것도 없으면 입력칸으로 이동)
+SLASH_LEUNITALKQUICK1, SLASH_LEUNITALKQUICK2 = "/l", "/ㅣ"
 SlashCmdList.LEUNITALKQUICK = function(msg)
     msg = strtrim(msg or "")
     if msg == "" then SoopBridge_Focus() else send(msg) end
@@ -262,6 +355,10 @@ SlashCmdList.SOOPBRIDGE = function(msg)
     msg = strtrim(msg or "")
     if msg == "" then
         SoopBridge_Toggle()
+    elseif msg == "방송" or msg == "연결" then
+        SoopBridge_ChooseTarget()
+    elseif msg:match("^방송%s") or msg:match("^연결%s") then
+        requestTarget((msg:gsub("^%S+%s+", "")))
     elseif msg == "아이콘" or msg == "icon" then
         db.btnShown = not db.btnShown
         if floatBtn then floatBtn:SetShown(db.btnShown) end

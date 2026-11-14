@@ -77,8 +77,15 @@ function stopIfOrphaned() {
 function poll() {
   if (stopIfOrphaned()) return;
   try {
-    const bj = (location.pathname.split("/").filter(Boolean)[0] || "").toLowerCase();
-    chrome.runtime.sendMessage({ type: "poll", bj }, (res) => {
+    const seg = location.pathname.split("/").filter(Boolean);
+    const bj = (seg[0] || "").toLowerCase();
+    // 방송 중이면 주소가 /아이디/방송번호, 꺼져 있으면 /아이디/null (입력칸은 꺼져 있어도 보임)
+    const live = /^\d+$/.test(seg[1] || "") ? 1 : 0;
+    // 탭 제목 "르니 - SOOP" 에서 스트리머 닉네임 (닉네임으로 연결할 때 쓰임)
+    // (방송이 꺼져 있으면 제목에 아이디가 나와서 방송 중일 때만)
+    const m = (document.title || "").match(/^(.+?)\s+-\s+SOOP\s*$/i);
+    const nick = live && m ? m[1].trim() : "";
+    chrome.runtime.sendMessage({ type: "poll", bj, nick, live }, (res) => {
       if (chrome.runtime.lastError) return;
       if (res && res.messages) pending.push(...res.messages);
     });

@@ -14,7 +14,8 @@ async function maybeReload(serverVersion) {
 
 chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
   if (req && req.type === "poll") {
-    fetch("http://127.0.0.1:17777/poll?bj=" + encodeURIComponent(req.bj || ""), { cache: "no-store" })
+    fetch("http://127.0.0.1:17777/poll?bj=" + encodeURIComponent(req.bj || "") +
+      "&nick=" + encodeURIComponent((req.nick || "").slice(0, 40)) + "&live=" + (req.live ? 1 : 0), { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
         sendResponse({ ok: true, messages: d.messages || [] });

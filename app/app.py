@@ -37,12 +37,173 @@ def save_cfg(c):
 cfg = load_cfg()
 q: "queue.Queue[str]" = queue.Queue()
 log_q: "queue.Queue[str]" = queue.Queue()
-status = {"wow": False, "ext_last": 0.0, "ext_bj": "", "ext_target_last": 0.0}
+status = {"wow": False, "ext_last": 0.0, "ext_bj": "", "ext_target_last": 0.0, "target_live": False}
+q_lock = threading.Lock()
+MSG_TTL = 30  # 이 시간(초) 안에 방송 채팅으로 못 넘어간 말은 버림 (나중에 한꺼번에 올라가는 것 방지)
+tabs = {}  # 크롬에 열려 있는 숲 탭: 아이디 → 마지막으로 확인한 시간
 DEFAULT_BJ = "leuni158"  # 르니 방송 아이디
+# 숲 오픈 API 클라이언트 아이디 (developers.sooplive.com 에서 발급, 공개돼도 되는 값). 비어 있으면 닉네임은
+# 크롬에 열어 둔 방송/전에 연결했던 방송에서만 찾는다.
+SOOP_CLIENT_ID = "3c40846875deef224004fea0101e0b5f"
+WOW_FOREVER_CATE = "00040427"  # 숲 카테고리: 월드 오브 워크래프트: 포에버
+CTRL_TARGET = "\x01T"  # 애드온 → 프로그램: "이 방송으로 연결해 줘" 신호 (채팅으로는 안 나감)
 
 
 def target_bj():
     return (cfg.get("bj") or DEFAULT_BJ).strip().lower()
+
+
+def nick_cache():
+    c = cfg.setdefault("nicks", {})
+    c.setdefault(DEFAULT_BJ, "르니")
+    return c
+
+
+def remember_nick(bj, nick):
+    nick = (nick or "").strip()
+    if bj and nick and nick_cache().get(bj) != nick:
+        nick_cache()[bj] = nick
+        save_cfg(cfg)
+
+
+def target_label(bj=None):
+    bj = bj or target_bj()
+    nick = nick_cache().get(bj)
+    return f"{nick}({bj})" if nick else bj
+
+
+def find_live_by_nick(nick):
+    """숲 공식 오픈 API(방송 리스트)에서 지금 방송 중인 스트리머를 닉네임으로 찾기 → (아이디, 닉네임) 또는 None"""
+    client_id = cfg.get("soop_client_id") or SOOP_CLIENT_ID
+    if not client_id:
+        return None
+    import urllib.request
+    from urllib.parse import urlencode
+    want = nick.replace(" ", "").lower()
+    partial = []
+
+    def page(n):
+        url = "https://openapi.sooplive.com/broad/list?" + urlencode(
+            {"client_id": client_id, "select_key": "cate", "select_value": "", "order_type": "view_cnt", "page_no": n})
+        req = urllib.request.Request(url, headers={"User-Agent": "LeuniTalk", "Accept": "*/*"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode("utf-8", "ignore"))
+
+    try:
+        first = page(1)
+    except Exception as e:
+        log(f"숲 방송 목록 조회 실패: {e}")
+        return None
+    total = int(first.get("total_cnt") or 0)
+    per = int(first.get("page_block") or 60) or 60
+    pages = min(150, (total + per - 1) // per)
+
+    def scan(d):
+        for b in d.get("broad") or []:
+            n = (b.get("user_nick") or "").replace(" ", "").lower()
+            if n == want:
+                return (b.get("user_id", "").lower(), b.get("user_nick", ""))
+            if want and want in n:
+                partial.append((b.get("user_id", "").lower(), b.get("user_nick", ""), b.get("broad_cate_no", "")))
+        return None
+
+    hit = scan(first)
+    if hit:
+        return hit
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(8) as ex:
+        for d in ex.map(lambda n: _safe(page, n), range(2, pages + 1)):
+            hit = d and scan(d)
+            if hit:
+                return hit
+    # 닉네임 일부만 맞으면: 하나뿐이거나, 와우 포에버 방송 중 하나뿐일 때만
+    wow = [p for p in partial if p[2] == WOW_FOREVER_CATE]
+    for cands in (partial, wow):
+        if len(cands) == 1:
+            return cands[0][:2]
+    return None
+
+
+def _safe(f, *a):
+    try:
+        return f(*a)
+    except Exception:
+        return None
+
+
+def resolve_target(text):
+    """방송 주소 / 숲 아이디 / 닉네임 → (아이디, 닉네임 또는 "", 안내 메시지 또는 "")"""
+    t = (text or "").strip()
+    if not t:
+        return None, "", "방송 아이디나 닉네임을 넣어 주세요."
+    if "sooplive" in t or "afreecatv" in t or "/" in t:
+        bj = parse_bj(t)
+        return bj, nick_cache().get(bj, ""), ""
+    import re
+    m = re.search(r"\(([A-Za-z0-9_]+)\)\s*$", t)  # "르니(leuni158)" 처럼 표시된 그대로 넣었을 때
+    if m:
+        return m.group(1).lower(), nick_cache().get(m.group(1).lower(), ""), ""
+    key = t.replace(" ", "").lower()
+    # 1) 전에 연결했거나 크롬에 열려 있는 방송의 닉네임
+    for bj, nick in nick_cache().items():
+        if nick.replace(" ", "").lower() == key:
+            return bj, nick, ""
+    # 2) 영어/숫자만 있으면 숲 아이디로 봄
+    if t.isascii() and all(c.isalnum() or c == "_" for c in t):
+        return t.lower(), nick_cache().get(t.lower(), ""), ""
+    # 3) 지금 방송 중인 스트리머 중에서 닉네임 찾기 (숲 공식 오픈 API)
+    hit = find_live_by_nick(t)
+    if hit and hit[0]:
+        remember_nick(*hit)
+        return hit[0], hit[1], ""
+    return None, "", (f"'{t}' 닉네임을 못 찾았어요. 그 방송을 크롬에서 한 번 열어 두거나, 숲 아이디/방송 주소로 연결해 주세요."
+                      if not (cfg.get("soop_client_id") or SOOP_CLIENT_ID)
+                      else f"'{t}' 닉네임으로 지금 방송 중인 스트리머를 못 찾았어요. 방송 중인지, 닉네임이 맞는지 확인해 주세요.")
+
+
+def write_addon_target():
+    """와우 애드온이 다음 접속//reload 때 읽을 '연결한 방송' 정보 파일 쓰기"""
+    wd = cfg.get("wowdir")
+    if not wd:
+        return
+    bj = target_bj()
+    nick = nick_cache().get(bj, "")
+
+    def lua(s):
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"'
+    body = (f"-- 르니톡 프로그램이 자동으로 쓰는 파일 (연결한 방송)\n"
+            f"SoopBridge_AppTarget = {{ id = {lua(bj)}, nick = {lua(nick)}, t = {int(cfg.get('bj_time') or 0)} }}\n")
+    try:
+        (Path(wd) / "Interface" / "AddOns" / "SoopBridge" / "Target.lua").write_text(body, encoding="utf-8")
+    except Exception as e:
+        log(f"애드온에 방송 정보 쓰기 실패: {e}")
+
+
+def open_broadcast(bj):
+    url = f"https://play.sooplive.co.kr/{bj}"
+    try:
+        subprocess.Popen(["cmd", "/c", "start", "", "chrome", url], creationflags=0x08000000)
+    except Exception:
+        import webbrowser
+        webbrowser.open(url)
+
+
+def set_target(text, source, open_tab=True):
+    """연결할 방송 바꾸기 (프로그램 창 / 와우 애드온 둘 다 여기로). 성공하면 (아이디, 닉네임), 실패면 (None, 안내)"""
+    bj, nick, err = resolve_target(text)
+    if not bj:
+        log(err)
+        return None, err
+    cfg["bj"] = bj
+    cfg["bj_time"] = int(time.time())
+    save_cfg(cfg)
+    if nick:
+        remember_nick(bj, nick)
+    write_addon_target()
+    log(f"연결할 방송: {target_label(bj)}  ({source})")
+    if open_tab and time.time() - tabs.get(bj, 0) > 3:  # 이미 열려 있는 방송이면 새로 안 엶
+        open_broadcast(bj)
+    return bj, nick
 
 
 def parse_bj(text):
@@ -262,10 +423,16 @@ def pixel_reader():
         if sum(data) % 4096 != syms[nsym] * 64 + syms[nsym + 1]:
             continue
         last_seq = seq
-        msg = data.decode("utf-8", errors="ignore").strip()[:MAXLEN]
+        raw = data.decode("utf-8", errors="ignore")
+        if raw.startswith(CTRL_TARGET):
+            want = raw[len(CTRL_TARGET):].strip()
+            log("와우에서 방송 연결 요청: " + want)
+            threading.Thread(target=set_target, args=(want, "와우에서"), daemon=True).start()
+            continue
+        msg = raw.strip()[:MAXLEN]
         if msg:
             log("와우에서 받음: " + msg)
-            q.put(msg)
+            q.put((time.time(), msg))
 
 
 
@@ -329,18 +496,32 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/poll"):
             from urllib.parse import urlparse, parse_qs
-            bj = (parse_qs(urlparse(self.path).query).get("bj", [""])[0] or "").lower()
+            qs = parse_qs(urlparse(self.path).query)
+            bj = (qs.get("bj", [""])[0] or "").lower()
+            nick = (qs.get("nick", [""])[0] or "").strip()
             now = time.time()
             status["ext_last"] = now
             status["ext_bj"] = bj
+            if bj:
+                tabs[bj] = now
+                if nick:
+                    remember_nick(bj, nick)
             msgs = []
+            live = qs.get("live", ["1"])[0] == "1"  # 옛 확장은 live 를 안 보냄 → 방송 중으로 봄
             if bj == target_bj():  # 연결한 방송 탭에만 메시지를 넘김
                 status["ext_target_last"] = now
-                while True:
-                    try:
-                        msgs.append(q.get_nowait())
-                    except queue.Empty:
-                        break
+                status["target_live"] = live
+                if live:
+                    with q_lock:
+                        while True:
+                            try:
+                                t0, m = q.get_nowait()
+                            except queue.Empty:
+                                break
+                            if now - t0 <= MSG_TTL:
+                                msgs.append(m)
+                            else:
+                                log("너무 늦어서 안 보냄: " + m)
             body = json.dumps({"messages": msgs, "version": VERSION}, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -375,10 +556,10 @@ class App:
         bjrow = tk.Frame(root); bjrow.pack(fill="x", padx=10, pady=(6, 2))
         tk.Label(bjrow, text="연결할 방송", font=("맑은 고딕", 10, "bold")).pack(side="left")
         self.bj_entry = tk.Entry(bjrow, font=("맑은 고딕", 10), width=22)
-        self.bj_entry.insert(0, target_bj()); self.bj_entry.pack(side="left", padx=6)
+        self.bj_entry.insert(0, target_label()); self.bj_entry.pack(side="left", padx=6)
         self.bj_entry.bind("<Return>", lambda e: self.connect_bj())
         tk.Button(bjrow, text="연결 + 방송 열기", command=self.connect_bj).pack(side="left")
-        tk.Label(root, text="방송 아이디나 방송 주소를 넣으세요 (예: leuni158). 그 방송 탭에만 채팅이 가요.",
+        tk.Label(root, text="닉네임, 숲 아이디, 방송 주소 다 돼요 (예: 르니 / leuni158). 와우에서는 /르니톡 방송 닉네임",
                  font=("맑은 고딕", 8), fg="#777").pack(padx=10, anchor="w")
 
         row = tk.Frame(root); row.pack(fill="x", padx=10, pady=4)
@@ -417,6 +598,7 @@ class App:
         try:
             dst = install_addon(wd)
             cfg["wowdir"] = wd; save_cfg(cfg)
+            write_addon_target()
             self.addon_lbl.config(text=f"애드온: 설치됨 ({dst})", fg="#555")
             log("와우 애드온(SoopBridge) 설치/업데이트 완료. 와우를 껐다 켜면 '르니톡' 창이 생겨요.")
         except PermissionError:
@@ -428,19 +610,15 @@ class App:
             cfg["wowdir"] = wd; save_cfg(cfg); self.setup_addon()
 
     def connect_bj(self):
-        bj = parse_bj(self.bj_entry.get())
-        if not bj:
-            messagebox.showinfo(APP, "방송 아이디를 넣어 주세요. 예: leuni158")
-            return
-        cfg["bj"] = bj; save_cfg(cfg)
-        self.bj_entry.delete(0, "end"); self.bj_entry.insert(0, bj)
-        url = f"https://play.sooplive.co.kr/{bj}"
-        log(f"연결할 방송: {bj}")
-        try:
-            subprocess.Popen(["cmd", "/c", "start", "", "chrome", url], creationflags=0x08000000)
-        except Exception:
-            import webbrowser
-            webbrowser.open(url)
+        text = self.bj_entry.get().strip()
+        if text == target_label():  # 칸을 안 고치고 누르면 지금 방송을 다시 열기
+            text = target_bj()
+
+        def work():
+            bj, info = set_target(text, "프로그램에서")
+            if not bj:
+                self.root.after(0, lambda: messagebox.showinfo(APP, info))
+        threading.Thread(target=work, daemon=True).start()
 
     def copy(self, text, what):
         self.root.clipboard_clear(); self.root.clipboard_append(text); self.root.update()
@@ -499,20 +677,40 @@ class App:
     def test_send(self):
         t = self.entry.get().strip()
         if t:
-            q.put(t[:MAXLEN]); self.entry.delete(0, "end"); log("테스트: " + t)
+            q.put((time.time(), t[:MAXLEN])); self.entry.delete(0, "end"); log("테스트: " + t)
+
+    def expire_old(self, now):
+        """방송 탭이 없거나 꺼져 있어서 못 보낸 말은 30초 지나면 버리고 알려줌"""
+        with q_lock:
+            items = []
+            while True:
+                try:
+                    items.append(q.get_nowait())
+                except queue.Empty:
+                    break
+            for t0, m in items:
+                if now - t0 <= MSG_TTL:
+                    q.put((t0, m))
+                else:
+                    log("방송 탭이 없거나 방송이 꺼져 있어서 못 보냄: " + m)
 
     def tick(self):
         self.wow_lbl.config(text="와우: 연결됨 ✅" if status["wow"] else "와우: 창을 못 찾음 (와우를 창 모드/전체 창 모드로 켜 주세요)",
                             fg="#080" if status["wow"] else "#c60")
         now = time.time()
-        tgt = target_bj()
-        if now - status["ext_target_last"] < 3:
+        tgt = target_label()
+        if self.root.focus_get() is not self.bj_entry and self.bj_entry.get() != tgt:
+            self.bj_entry.delete(0, "end"); self.bj_entry.insert(0, tgt)  # 와우에서 바꾼 방송 반영
+        if now - status["ext_target_last"] < 3 and not status["target_live"]:
+            txt, col = f"크롬 확장: {tgt} 탭은 열려 있지만 방송이 꺼져 있어요 (채팅을 보낼 수 없음)", "#c60"
+        elif now - status["ext_target_last"] < 3:
             txt, col = f"크롬 확장: {tgt} 방송에 연결됨 ✅", "#080"
         elif now - status["ext_last"] < 3:
             txt, col = f"크롬 확장: 숲 탭은 열려 있지만 {tgt} 방송이 아니에요 (위에서 '연결 + 방송 열기')", "#c60"
         else:
             txt, col = "크롬 확장: 숲 방송 탭이 없거나 확장이 설치/켜져 있지 않아요", "#c60"
         self.ext_lbl.config(text=txt, fg=col)
+        self.expire_old(now)
         while True:
             try:
                 line = log_q.get_nowait()

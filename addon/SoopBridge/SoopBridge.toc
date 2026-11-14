@@ -6,4 +6,5 @@
 ## Version: 2.0
 ## IconTexture: Interface\AddOns\SoopBridge\leuni
 ## SavedVariables: SoopBridgeDB
+Target.lua
 SoopBridge.lua
