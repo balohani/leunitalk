@@ -18,7 +18,7 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       "&nick=" + encodeURIComponent((req.nick || "").slice(0, 40)) + "&live=" + (req.live ? 1 : 0), { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
-        sendResponse({ ok: true, messages: d.messages || [] });
+        sendResponse({ ok: true, messages: d.messages || [], navigate: d.navigate || "" });
         maybeReload(d.version);
       })
       .catch(() => sendResponse({ ok: false, messages: [] }));
