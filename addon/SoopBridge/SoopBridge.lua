@@ -322,10 +322,30 @@ function SoopBridge_Focus()
     C_Timer.After(0, function() input:SetFocus() end)
 end
 
+-- ===== 새 버전 알림 (PC 프로그램이 확인해서 Target.lua 에 적어 줌) =====
+local function verNum(v)
+    local a, b, c = tostring(v or ""):match("(%d+)%.?(%d*)%.?(%d*)")
+    return (tonumber(a) or 0) * 1000000 + (tonumber(b) or 0) * 1000 + (tonumber(c) or 0)
+end
+
+local function checkUpdate()
+    local info = SoopBridge_AppInfo
+    if type(info) ~= "table" or not info.latest or info.latest == "" then return end
+    if verNum(info.latest) <= verNum(info.version) then return end
+    local msg = "|cffc39bf5르니톡|r 새 버전 |cffffffffv" .. info.latest .. "|r 이 나왔어요! PC의 르니톡 프로그램에서 |cffffd100업데이트|r 버튼을 눌러 주세요."
+    DEFAULT_CHAT_FRAME:AddMessage(msg)
+    if history then history:AddMessage(msg) end
+end
+
 local f = CreateFrame("Frame")
 f:RegisterEvent("ADDON_LOADED")
+f:RegisterEvent("PLAYER_LOGIN")
 
 f:SetScript("OnEvent", function(_, event, ...)
+    if event == "PLAYER_LOGIN" then
+        C_Timer.After(5, checkUpdate)  -- 접속 메시지들 사이에 묻히지 않게 조금 뒤에
+        return
+    end
     if event == "ADDON_LOADED" then
         if ... ~= "SoopBridge" then return end
         SoopBridgeDB = SoopBridgeDB or {}

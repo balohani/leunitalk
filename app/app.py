@@ -37,7 +37,9 @@ def save_cfg(c):
 cfg = load_cfg()
 q: "queue.Queue[str]" = queue.Queue()
 log_q: "queue.Queue[str]" = queue.Queue()
-status = {"wow": False, "ext_last": 0.0, "ext_bj": "", "ext_target_last": 0.0, "target_live": False}
+status = {"wow": False, "ext_last": 0.0, "ext_bj": "", "ext_target_last": 0.0, "target_live": False,
+          "latest": "", "latest_url": "", "latest_notes": ""}
+UPDATE_EVERY = 3 * 3600  # 켜 둔 동안 3시간마다 새 버전 확인
 q_lock = threading.Lock()
 MSG_TTL = 30  # 이 시간(초) 안에 방송 채팅으로 못 넘어간 말은 버림 (나중에 한꺼번에 올라가는 것 방지)
 tabs = {}  # 크롬에 열려 있는 숲 탭: 아이디 → 마지막으로 확인한 시간
@@ -172,7 +174,8 @@ def write_addon_target():
     def lua(s):
         return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"'
     body = (f"-- 르니톡 프로그램이 자동으로 쓰는 파일 (연결한 방송)\n"
-            f"SoopBridge_AppTarget = {{ id = {lua(bj)}, nick = {lua(nick)}, t = {int(cfg.get('bj_time') or 0)} }}\n")
+            f"SoopBridge_AppTarget = {{ id = {lua(bj)}, nick = {lua(nick)}, t = {int(cfg.get('bj_time') or 0)} }}\n"
+            f"SoopBridge_AppInfo = {{ version = {lua(VERSION)}, latest = {lua(status['latest'].lstrip('vV'))} }}\n")
     try:
         (Path(wd) / "Interface" / "AddOns" / "SoopBridge" / "Target.lua").write_text(body, encoding="utf-8")
     except Exception as e:
@@ -444,6 +447,12 @@ def _ver(v):
         return (0,)
 
 
+def update_loop(app):
+    while True:
+        check_update(app)
+        time.sleep(UPDATE_EVERY)
+
+
 def check_update(app):
     if not getattr(sys, "frozen", False):
         return  # 개발 중(파이썬 직접 실행)에는 건너뜀
@@ -458,12 +467,18 @@ def check_update(app):
         return
     latest = rel.get("tag_name", "")
     if _ver(latest) <= _ver(VERSION):
-        log(f"최신 버전이에요 ({VERSION})")
+        if not status["latest"]:
+            log(f"최신 버전이에요 ({VERSION})")
         return
     url = next((a["browser_download_url"] for a in rel.get("assets", []) if a.get("name") == EXE_NAME), None)
     if not url:
         return
-    app.root.after(0, lambda: app.ask_update(latest, url, rel.get("body") or ""))
+    first = status["latest"] != latest
+    status.update(latest=latest, latest_url=url, latest_notes=rel.get("body") or "")
+    write_addon_target()  # 와우 애드온도 다음 접속//reload 때 "새 버전 있어요" 알림
+    if first:
+        log(f"새 버전 {latest} 이 나왔어요")
+        app.root.after(0, lambda: app.ask_update(latest, url, rel.get("body") or ""))
 
 
 def apply_update(url):
@@ -552,6 +567,9 @@ class App:
         self.wow_lbl = tk.Label(root, text="와우: 확인 중", font=("맑은 고딕", 10)); self.wow_lbl.pack(**pad)
         self.ext_lbl = tk.Label(root, text="크롬 확장: 확인 중", font=("맑은 고딕", 10)); self.ext_lbl.pack(**pad)
         self.addon_lbl = tk.Label(root, text="애드온: -", font=("맑은 고딕", 9), fg="#555"); self.addon_lbl.pack(**pad)
+        # 새 버전이 있으면 나타나는 업데이트 버튼 (알림 창에서 '아니요' 눌러도 나중에 여기서 가능)
+        self.upd_btn = tk.Button(root, text="", fg="#fff", bg="#8a4fd8", activebackground="#6d3bb0",
+                                 font=("맑은 고딕", 10, "bold"), command=self.update_now)
 
         bjrow = tk.Frame(root); bjrow.pack(fill="x", padx=10, pady=(6, 2))
         tk.Label(bjrow, text="연결할 방송", font=("맑은 고딕", 10, "bold")).pack(side="left")
@@ -580,7 +598,7 @@ class App:
             install_extension_files()  # 확장 파일 최신화 (확장이 버전 차이를 보고 스스로 다시 로드함)
         except Exception as e:
             log(f"확장 파일 갱신 실패: {e}")
-        threading.Thread(target=check_update, args=(self,), daemon=True).start()
+        threading.Thread(target=update_loop, args=(self,), daemon=True).start()
         if not cfg.get("ext_guided"):
             root.after(800, self.guide_extension)
         root.after(300, self.tick)
@@ -658,6 +676,12 @@ class App:
         step(4, "끝!", "숲 방송 탭은 새로고침하지 않아도 자동으로 연결돼요.\n이 창은 언제든 '크롬 확장 설치 방법' 버튼으로 다시 열 수 있어요.")
         tk.Button(w, text="닫기", command=w.destroy, width=10).pack(pady=8)
 
+    def update_now(self):
+        if status["latest_url"]:
+            log("업데이트 받는 중...")
+            self.upd_btn.config(state="disabled", text="업데이트 받는 중...")
+            threading.Thread(target=self._do_update, args=(status["latest_url"],), daemon=True).start()
+
     def ask_update(self, latest, url, notes):
         msg = f"새 버전 {latest} 이 있어요 (지금 {VERSION}).\n\n{notes[:400]}\n\n지금 업데이트할까요? 끝나면 자동으로 다시 켜져요."
         if messagebox.askyesno(APP, msg):
@@ -711,6 +735,9 @@ class App:
             txt, col = "크롬 확장: 숲 방송 탭이 없거나 확장이 설치/켜져 있지 않아요", "#c60"
         self.ext_lbl.config(text=txt, fg=col)
         self.expire_old(now)
+        if status["latest_url"] and not self.upd_btn.winfo_ismapped():
+            self.upd_btn.config(text=f"⬆ 새 버전 {status['latest']} 업데이트 (지금 {VERSION})")
+            self.upd_btn.pack(fill="x", padx=10, pady=(2, 4), after=self.addon_lbl)
         while True:
             try:
                 line = log_q.get_nowait()
