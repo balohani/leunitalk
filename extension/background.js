@@ -12,13 +12,34 @@ async function maybeReload(serverVersion) {
   chrome.runtime.reload();
 }
 
-chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
+// 탭 바꾸기: 페이지 안에서 주소를 바꾸면 "사이트에서 나가시겠습니까?" 같은 창에 막힐 수 있어서
+// 같은 자리에 새 방송 탭을 열고 옛 탭을 닫는다 (확장이 닫는 건 그런 창이 안 뜸)
+async function swapTab(tab, bj) {
+  try {
+    await chrome.tabs.create({ url: "https://play.sooplive.co.kr/" + bj, windowId: tab.windowId,
+                               index: tab.index + 1, active: tab.active });
+    await chrome.tabs.remove(tab.id);
+  } catch (e) {}
+}
+
+chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req && req.type === "poll") {
     fetch("http://127.0.0.1:17777/poll?bj=" + encodeURIComponent(req.bj || "") +
       "&nick=" + encodeURIComponent((req.nick || "").slice(0, 40)) + "&live=" + (req.live ? 1 : 0), { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
-        sendResponse({ ok: true, messages: d.messages || [], navigate: d.navigate || "" });
+        const tab = sender && sender.tab;
+        if (tab && d.navigate && /^[a-z0-9_]+$/i.test(d.navigate)) {
+          sendResponse({ ok: true, messages: [] });
+          swapTab(tab, d.navigate);
+          return;
+        }
+        if (tab && d.close) {
+          sendResponse({ ok: true, messages: [] });
+          chrome.tabs.remove(tab.id).catch(() => {});
+          return;
+        }
+        sendResponse({ ok: true, messages: d.messages || [] });
         maybeReload(d.version);
       })
       .catch(() => sendResponse({ ok: false, messages: [] }));

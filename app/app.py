@@ -43,6 +43,8 @@ UPDATE_EVERY = 3 * 3600  # 켜 둔 동안 3시간마다 새 버전 확인
 q_lock = threading.Lock()
 MSG_TTL = 30  # 이 시간(초) 안에 방송 채팅으로 못 넘어간 말은 버림 (나중에 한꺼번에 올라가는 것 방지)
 pending_nav = {}  # 보던 방송 탭을 다른 방송으로 바꾸라는 요청 {"from", "to", "t"}
+pending_close = {}  # 새 탭으로 열었으니 늦게라도 응답하는 옛 방송 탭은 닫으라는 요청 {"from", "t"}
+CLOSE_TTL = 600
 tabs = {}  # 크롬에 열려 있는 숲 탭: 아이디 → 마지막으로 확인한 시간
 DEFAULT_BJ = "leuni158"  # 르니 방송 아이디
 # 숲 오픈 API 클라이언트 아이디 (developers.sooplive.com 에서 발급, 공개돼도 되는 값). 비어 있으면 닉네임은
@@ -207,9 +209,13 @@ def set_target(text, source, open_tab=True):
     write_addon_target()
     log(f"연결할 방송: {target_label(bj)}  ({source})")
     now = time.time()
+    if pending_close.get("from") == bj:  # 다시 그 방송으로 돌아왔으면 닫지 않음
+        pending_close.clear()
     if open_tab and now - tabs.get(bj, 0) > 3:  # 이미 열려 있는 방송이면 그대로
         if old != bj and now - tabs.get(old, 0) < 3:
-            # 보던 방송 탭을 새 방송으로 바꿈 (새 탭을 계속 늘리지 않게). 확장이 3초 안에 안 받아 가면 새로 엶
+            # 보던 방송 탭을 새 방송으로 바꿈 (새 탭을 계속 늘리지 않게).
+            # 크롬이 뒤에 있는 탭을 느리게 깨우면 3초 안에 못 받아 갈 수 있음 → 그땐 새로 열고,
+            # 옛 탭이 나중에라도 연락해 오면 닫게 함 (탭이 쌓이지 않게)
             nav = {"from": old, "to": bj, "t": now}
             pending_nav.clear(); pending_nav.update(nav)
 
@@ -217,6 +223,7 @@ def set_target(text, source, open_tab=True):
                 time.sleep(3)
                 if pending_nav.get("t") == nav["t"]:
                     pending_nav.clear()
+                    pending_close.clear(); pending_close.update({"from": old, "t": time.time()})
                     open_broadcast(bj)
             threading.Thread(target=fallback, daemon=True).start()
         else:
@@ -557,6 +564,11 @@ class Handler(BaseHTTPRequestHandler):
                 resp["navigate"] = pending_nav["to"]
                 log(f"보던 방송 탭을 {target_label(pending_nav['to'])} 방송으로 바꿈")
                 pending_nav.clear()
+            elif pending_close and bj == pending_close.get("from"):
+                if now - pending_close["t"] < CLOSE_TTL and bj != target_bj():
+                    resp["close"] = True
+                    log(f"새 탭으로 열어서 옛 방송 탭({target_label(bj)})은 닫음")
+                pending_close.clear()
             body = json.dumps(resp, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")

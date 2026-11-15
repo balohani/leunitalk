@@ -88,11 +88,6 @@ function poll() {
     chrome.runtime.sendMessage({ type: "poll", bj, nick, live }, (res) => {
       if (chrome.runtime.lastError) return;
       if (res && res.messages) pending.push(...res.messages);
-      // 르니톡에서 방송을 바꾸면 새 탭 대신 이 탭을 그 방송으로 이동
-      if (res && res.navigate && /^[a-z0-9_]+$/i.test(res.navigate) && res.navigate.toLowerCase() !== bj) {
-        timers.forEach(clearInterval);
-        location.href = "https://play.sooplive.co.kr/" + res.navigate;
-      }
     });
   } catch (e) {
     timers.forEach(clearInterval); // 확장이 다시 로드됨 → 이 스크립트는 종료
