@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "르니톡",
   "version": "1.0.0",
-  "description": "와우에서 친 말을 지금 보고 있는 숲 방송 채팅에 입력해 주는 르니 팬 제작 도구",
+  "description": "와우에서 직접 친 말을 지금 보고 있는 숲(SOOP) 방송 채팅에 입력해 주는 팬 제작 도구 (르니톡 PC 프로그램과 함께 사용)",
   "background": {
     "service_worker": "background.js"
   },

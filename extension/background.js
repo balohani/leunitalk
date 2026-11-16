@@ -4,6 +4,8 @@
 const SOOP_URLS = ["https://play.sooplive.co.kr/*", "https://play.sooplive.com/*"];
 
 async function maybeReload(serverVersion) {
+  // 크롬 웹스토어에서 설치한 확장(update_url 있음)은 크롬이 알아서 업데이트하니 스스로 다시 로드하지 않음
+  if (chrome.runtime.getManifest().update_url) return;
   const mine = chrome.runtime.getManifest().version;
   if (!serverVersion || serverVersion === mine) return;
   const { reloadedFor } = await chrome.storage.local.get("reloadedFor");
