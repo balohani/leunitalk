@@ -493,13 +493,38 @@ def pip_loop():
             if keep_bottom:
                 vy = vy + v[3] - vh
                 u.SetWindowPos(hwnd, z, wx, vy - it, aw, ah, SWP_NOACTIVATE)
-        if ins:
-            rgn = g.CreateRectRgn(il, it, il + vw, it + vh)
-            if not u.SetWindowRgn(hwnd, rgn, True):
-                g.DeleteObject(rgn)
+        if ins != logged.get("ins"):
+            logged["ins"] = ins
+            log(f"미니창 크롬 테두리(왼,위,오,아래): {ins}")
+        region[0] = (il, it, il + vw, it + vh) if ins else None
+        ensure_region(hwnd)
         last = want
         last_actual = (vx, vy, vw, vh)
         return last_actual
+
+    region = [None]  # 남길 영역 (창 기준 좌표)
+    logged = {}
+
+    def ensure_region(hwnd):
+        """크롬은 창 크기가 바뀌거나 앞뒤가 바뀔 때 창 모양(영역)을 스스로 되돌림 → 다르면 다시 자름"""
+        want = region[0]
+        if not want:
+            return
+        box = wintypes.RECT()
+        kind = u.GetWindowRgnBox(hwnd, ctypes.byref(box))  # 0 = 영역 없음
+        if kind and (box.left, box.top, box.right, box.bottom) == want:
+            return
+        rgn = g.CreateRectRgn(*want)
+        if u.SetWindowRgn(hwnd, rgn, True):
+            n = logged.get("reset", 0) + 1
+            logged["reset"] = n
+            if n in (2, 20, 200):
+                log(f"크롬이 미니창 모양을 되돌려서 다시 자름 ({n}번째)")
+        else:
+            g.DeleteObject(rgn)
+            if not logged.get("fail"):
+                logged["fail"] = True
+                log("미니창 자르기 실패 (SetWindowRgn)")
 
     def release():
         nonlocal pip_hwnd
@@ -515,6 +540,8 @@ def pip_loop():
                 if pip_hwnd:
                     release()
                 last = cur = drag = None
+                region[0] = None
+                logged.clear()
                 status["pip_ui"] = None  # 다음에 미니창을 켜면 다시 잼
                 continue
             hwnd = find_pip_window()
@@ -563,6 +590,7 @@ def pip_loop():
                     drag = None
                 continue
             cur = place(hwnd, pip_target(rect), front, keep_bottom=not cfg.get("pip_free"))
+            ensure_region(hwnd)
         except Exception as e:
             log(f"미니창 위치 맞추기 실패: {e}")
             drag = None
