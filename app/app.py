@@ -476,7 +476,9 @@ def pip_loop():
         f = cfg.get("pip_free")
         if not f or len(f) < 4:
             return None
-        if f[2] > 6000 or f[3] > 6000:  # 화면 절반보다 큰 미니창은 잘못 기억한 것 (예전 버그) → 버림
+        cx, cy = f[0] + f[2] // 2, f[1] + f[3] // 2
+        if f[2] > 6000 or f[3] > 6000 or not (0 <= cx <= 10000 and 0 <= cy <= 10000):
+            # 화면 절반보다 크거나 와우 화면 밖(다른 모니터 등)에 기억된 자리는 잘못된 것 → 버리고 채팅창 위로
             cfg.pop("pip_free", None); save_cfg(cfg)
             return None
         rx, ry, rw, rh = rect
@@ -503,8 +505,11 @@ def pip_loop():
             if mouse_down and placed:
                 pt = wintypes.POINT(); u.GetCursorPos(ctypes.byref(pt))
                 x, y, w, h = placed
-                if x - 10 <= pt.x <= x + w + 10 and y - 10 <= pt.y <= y + h + 10:
-                    user_grab = True  # 사람이 미니창(제목줄/테두리)을 잡았음
+                il, it, ir, ib = chrome_insets(hwnd) or (8, 32, 8, 8)
+                inside = x - 10 <= pt.x <= x + w + 10 and y - 10 <= pt.y <= y + h + 10
+                in_video = x + il + 4 <= pt.x <= x + w - ir - 4 and y + it + 4 <= pt.y <= y + h - ib - 4
+                if inside and not in_video:
+                    user_grab = True  # 사람이 미니창 제목줄/테두리를 잡았음 (영상 부분 클릭은 아님)
             if placed and now_r != placed and not mouse_down and not user_grab:
                 # 사람이 잡지 않았는데 바뀜 (미니창을 끄면서 확장이 창을 키운 경우 등) → 기억하지 않음
                 placed = now_r
