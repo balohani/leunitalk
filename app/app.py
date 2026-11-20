@@ -463,6 +463,7 @@ def pip_loop():
         try:
             if time.time() - status["pip_seen"] > 3:
                 last = cur = drag = None
+                status["pip_ui"] = None  # 다음에 미니창을 켜면 다시 잼
                 continue
             hwnd = find_pip_window()
             rect = status["wow_rect"]
@@ -788,7 +789,9 @@ class Handler(BaseHTTPRequestHandler):
                 status["pip_seen"] = now
                 try:
                     top, side = (int(v) for v in qs.get("ui", [""])[0].split(",")[:2])
-                    if 0 <= top < 300 and 0 <= side < 50:
+                    # 처음 잰 값으로 고정: 창 크기를 바꿀 때마다 반올림 때문에 1픽셀씩 달라져서
+                    # 그때마다 창을 다시 맞추면 미니창이 계속 커졌다 작아졌다 함
+                    if status["pip_ui"] is None and 0 <= top < 300 and 0 <= side < 50:
                         # top 은 위아래 크롬 테두리 합 → 아래 테두리(≈ 옆 테두리)를 빼면 제목줄+위 테두리
                         dt, ds = (cfg.get("pip_trim") or [0, 0])[:2]  # PC마다 어긋나면 설정으로 보정
                         side2 = max(0, side + int(ds))
