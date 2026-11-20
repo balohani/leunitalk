@@ -133,6 +133,17 @@ function applyPipStyle() {
     "max-width:none!important;max-height:none!important;margin:0!important;transform:none!important;" +
     "z-index:2147483647!important;background:#000!important");
   box.dataset.ltPipBox = "";
+  // 상자 안에서 영상까지 이어지는 층들(#player, #videoLayer 등)도 상자에 꽉 차게.
+  // 숲은 이 층들 크기를 페이지 배치로 따로 정해서, 상자만 키우면 영상이 구석에 작게 남음 (실제 숲 페이지로 확인)
+  const IN = "width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;" +
+    "min-width:0!important;min-height:0!important;left:0!important;top:0!important;margin:0!important;transform:none!important";
+  for (const v of vids.length ? vids : document.querySelectorAll("video")) {
+    if (!box.contains(v)) continue;
+    if (v.dataset.ltPip === undefined) mark(v, IN + ";object-fit:contain!important");
+    for (let e = v.parentElement; e && e !== box && box.contains(e); e = e.parentElement) {
+      if (e.dataset.ltPip === undefined) mark(e, IN);
+    }
+  }
   mark(document.documentElement, "overflow:hidden!important;background:#000!important");
   window.dispatchEvent(new Event("resize")); // 플레이어가 새 크기에 맞게 다시 그리도록
 }
