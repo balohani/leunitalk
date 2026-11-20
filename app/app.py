@@ -445,23 +445,38 @@ def pip_loop():
     asked = None    # 프로그램이 마지막으로 요청한 자리 (크롬이 최소 크기로 바꿔 놓아도 다시 요청하지 않게)
     topmost = None
     user_grab = False
+    ins_lock = None  # 크롬 제목줄/테두리 두께: 한 번 재면 고정 (매번 재면 크롬이 화면을 늦게 맞춰서 값이 흔들림 → 창이 계속 커졌다 작아짐)
+    ins_seen = []
+
+    def insets(hwnd):
+        nonlocal ins_lock
+        if ins_lock:
+            return ins_lock
+        v = chrome_insets(hwnd)
+        if v:
+            ins_seen.append(v)
+            if len(ins_seen) >= 3 and ins_seen[-1] == ins_seen[-2] == ins_seen[-3]:
+                ins_lock = v  # 세 번 연속 같으면 고정
+                log(f"미니창 크롬 테두리(왼,위,오,아래): {v}")
+        return (8, 32, 8, 8)  # 고정되기 전엔 흔한 값으로
 
     def wrect(h):
         r = wintypes.RECT(); u.GetWindowRect(h, ctypes.byref(r))
         return (r.left, r.top, r.right - r.left, r.bottom - r.top)
 
     def release():
-        nonlocal pip_hwnd, placed, topmost, asked
+        nonlocal pip_hwnd, placed, topmost, asked, ins_lock
         if pip_hwnd and u.IsWindow(pip_hwnd):
             u.SetWindowPos(pip_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-        pip_hwnd, placed, topmost, asked = None, None, None, None
+        pip_hwnd, placed, topmost, asked, ins_lock = None, None, None, None, None
+        ins_seen.clear()
 
     def attached_rect(hwnd, rect):
         """르니톡 채팅창 바로 위(자리가 없으면 아래)에 붙일 창 자리"""
         rx, ry, rw, rh = rect
         geom = cfg.get("chat_geom")
         fx, fy, fw, fh = ((v / 10000 for v in geom) if geom else (0.01, 0.6, 0.2, 0.15))
-        il, it, ir, ib = chrome_insets(hwnd) or (8, 32, 8, 8)
+        il, it, ir, ib = insets(hwnd)
         vw = max(240, int(fw * rw)); vh = int(vw * 9 / 16)
         ww, wh = vw + il + ir, vh + it + ib
         wx = rx + int(fx * rw) - il
@@ -505,7 +520,7 @@ def pip_loop():
             if mouse_down and placed:
                 pt = wintypes.POINT(); u.GetCursorPos(ctypes.byref(pt))
                 x, y, w, h = placed
-                il, it, ir, ib = chrome_insets(hwnd) or (8, 32, 8, 8)
+                il, it, ir, ib = insets(hwnd)
                 inside = x - 10 <= pt.x <= x + w + 10 and y - 10 <= pt.y <= y + h + 10
                 in_video = x + il + 4 <= pt.x <= x + w - ir - 4 and y + it + 4 <= pt.y <= y + h - ib - 4
                 if inside and not in_video:
