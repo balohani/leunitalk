@@ -110,15 +110,30 @@ local function targetName(t)
     return t.id
 end
 
+-- PC 프로그램이 Target.lua 에 적어 준 방송 상태 (접속//reload 때 읽음): notfound / live / off
+local function appStatus()
+    local st = SoopBridge_AppStatus
+    if type(st) ~= "table" or not st.state or st.state == "" then return nil end
+    return st
+end
+
 local function updateTitle()
     if not titleText then return end
     local t = db.target
     local name = targetName(t)
+    local st = appStatus()
     local s = "|cffc39bf5르니톡|r  "
-    if not name then
+    local newer = t and t.pending and st and (t.t or 0) > (st.t or 0)  -- 상태 파일보다 나중에 와우에서 다시 요청함
+    if st and st.state == "notfound" and not newer then
+        s = s .. "|cffff9933'" .. (st.q or "") .. "' 방송을 못 찾았어요 (클릭)|r"
+    elseif not name then
         s = s .. "|cffff9933방송 선택 (클릭)|r"
     elseif t.pending then
         s = s .. "|cffffffff" .. name .. "|r |cff888888방송 연결 요청함|r"
+    elseif st and st.state == "off" then
+        s = s .. "|cffffffff" .. name .. "|r |cffff9933방송 꺼짐|r"
+    elseif st and st.state == "live" then
+        s = s .. "|cffffffff" .. name .. "|r |cff33ff66방송 중|r"
     else
         s = s .. "|cffffffff" .. name .. "|r |cff888888방송|r"
     end
@@ -162,10 +177,40 @@ function SoopBridge_ChooseTarget()
     StaticPopup_Show("SOOPBRIDGE_TARGET")
 end
 
+-- ===== 방송 미니창 (PIP): PC 프로그램이 크롬 방송 탭을 작은 창으로 빼서 이 채팅창 바로 위에 붙여 줌 =====
+-- 채팅창 위치를 와우 화면 대비 비율(1/10000)로 보냄: 왼쪽, 위쪽(화면 위에서부터), 폭, 높이
+local function chatGeom()
+    if not frame then return nil end
+    local l, t, w, h = frame:GetLeft(), frame:GetTop(), frame:GetWidth(), frame:GetHeight()
+    if not l or not t then return nil end
+    local fs, us = frame:GetEffectiveScale(), UIParent:GetEffectiveScale()
+    local W, H = UIParent:GetWidth() * us, UIParent:GetHeight() * us
+    if W <= 0 or H <= 0 then return nil end
+    local function n(v) return math.max(0, math.floor(v * 10000 + 0.5)) end
+    return n(l * fs / W) .. "," .. n(1 - t * fs / H) .. "," .. n(w * fs / W) .. "," .. n(h * fs / H)
+end
+
+local geomTimer
+local function sendGeom()
+    if not db.pipUsed then return end
+    if geomTimer then geomTimer:Cancel() end
+    geomTimer = C_Timer.NewTimer(0.4, function()
+        local g = chatGeom()
+        if g then sendControl("\001G" .. g) end
+    end)
+end
+
+function SoopBridge_Pip(mode)
+    db.pipUsed = true
+    sendControl("\001P" .. (mode or "toggle") .. "|" .. (chatGeom() or ""))
+    if history then history:AddMessage("|cffc39bf5방송 미니창|r " .. (mode == "off" and "끄기" or mode == "on" and "켜기" or "켜기/끄기") .. " 요청함") end
+end
+
 local function savePos()
     local p, _, rp, x, y = frame:GetPoint()
     db.point = { p, "UIParent", rp, x, y }
     db.w, db.h = frame:GetSize()
+    sendGeom()
 end
 
 local function build()
@@ -203,7 +248,7 @@ local function build()
         if db.target and db.target.id and db.target.id ~= "" and db.target.nick ~= "" and not db.target.pending then
             GameTooltip:AddLine("숲 아이디: " .. db.target.id, 0.7, 0.7, 0.7)
         end
-        GameTooltip:AddLine("PC 프로그램에서 바꾼 방송은 /reload 하면 여기 반영돼요", 0.6, 0.6, 0.6, true)
+        GameTooltip:AddLine("PC 프로그램에서 바꾼 방송·방송 상태는 /reload 하면 여기 반영돼요 (실시간 알림은 화면 위에 떠요)", 0.6, 0.6, 0.6, true)
         GameTooltip:Show()
     end)
     targetBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -226,10 +271,26 @@ local function build()
         GameTooltip:AddLine("떠 있는 르니 아이콘 우클릭 → 바로 입력", 0.9, 0.9, 0.9)
         GameTooltip:AddLine("단축키: ESC > 설정 > 단축키 > 애드온 > 르니톡", 0.9, 0.9, 0.9)
         GameTooltip:AddLine("제목줄 클릭 또는 |cffffffff/르니톡 방송 닉네임|r → 보낼 방송 바꾸기", 0.9, 0.9, 0.9)
+        GameTooltip:AddLine("PIP 버튼 또는 |cffffffff/르니톡 pip|r → 방송 미니창 켜기/끄기", 0.9, 0.9, 0.9)
         GameTooltip:AddLine("/르니톡 아이콘 → 떠 있는 아이콘 숨기기/보이기", 0.7, 0.7, 0.7)
         GameTooltip:Show()
     end)
     help:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    -- 방송 미니창 버튼
+    local pipBtn = CreateFrame("Button", nil, frame)
+    pipBtn:SetSize(26, 16); pipBtn:SetPoint("RIGHT", help, "LEFT", -2, 0)
+    local pt = pipBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    pt:SetPoint("CENTER"); pt:SetText("|cffc39bf5PIP|r")
+    pipBtn:SetScript("OnClick", function() SoopBridge_Pip("toggle") end)
+    pipBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("|cffc39bf5방송 미니창|r")
+        GameTooltip:AddLine("클릭: 크롬의 방송을 작은 창으로 빼서 이 창 바로 위에 붙이기 / 다시 되돌리기", 1, 1, 1, true)
+        GameTooltip:AddLine("이 창을 옮기거나 크기를 바꾸면 미니창도 따라와요", 0.7, 0.7, 0.7, true)
+        GameTooltip:Show()
+    end)
+    pipBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     local grip = CreateFrame("Button", nil, frame)
     grip:SetSize(14, 14); grip:SetPoint("BOTTOMRIGHT", -1, 1)
@@ -344,6 +405,7 @@ f:RegisterEvent("PLAYER_LOGIN")
 f:SetScript("OnEvent", function(_, event, ...)
     if event == "PLAYER_LOGIN" then
         C_Timer.After(5, checkUpdate)  -- 접속 메시지들 사이에 묻히지 않게 조금 뒤에
+        C_Timer.After(6, sendGeom)  -- 미니창을 쓰는 사람이면 채팅창 위치를 프로그램에 다시 알려 줌
         return
     end
     if event == "ADDON_LOADED" then
@@ -379,6 +441,12 @@ SlashCmdList.SOOPBRIDGE = function(msg)
         SoopBridge_ChooseTarget()
     elseif msg:match("^방송%s") or msg:match("^연결%s") then
         requestTarget((msg:gsub("^%S+%s+", "")))
+    elseif msg:lower() == "pip" or msg == "미니" or msg == "미니창" or msg == "방송창" then
+        SoopBridge_Pip("toggle")
+    elseif msg:lower():match("^pip%s") or msg:match("^미니창?%s") then
+        local a = msg:match("%s+(%S+)$") or ""
+        a = a:lower()
+        SoopBridge_Pip((a == "켜기" or a == "on") and "on" or (a == "끄기" or a == "off") and "off" or "toggle")
     elseif msg == "아이콘" or msg == "icon" then
         db.btnShown = not db.btnShown
         if floatBtn then floatBtn:SetShown(db.btnShown) end

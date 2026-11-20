@@ -38,6 +38,7 @@ cfg = load_cfg()
 q: "queue.Queue[str]" = queue.Queue()
 log_q: "queue.Queue[str]" = queue.Queue()
 status = {"wow": False, "ext_last": 0.0, "ext_bj": "", "ext_target_last": 0.0, "target_live": False,
+          "live_known": "", "pip_seen": 0.0, "wow_rect": None, "wow_hwnd": 0,
           "latest": "", "latest_url": "", "latest_notes": ""}
 UPDATE_EVERY = 3 * 3600  # 켜 둔 동안 3시간마다 새 버전 확인
 q_lock = threading.Lock()
@@ -52,6 +53,23 @@ DEFAULT_BJ = "leuni158"  # 르니 방송 아이디
 SOOP_CLIENT_ID = "3c40846875deef224004fea0101e0b5f"
 WOW_FOREVER_CATE = "00040427"  # 숲 카테고리: 월드 오브 워크래프트: 포에버
 CTRL_TARGET = "\x01T"  # 애드온 → 프로그램: "이 방송으로 연결해 줘" 신호 (채팅으로는 안 나감)
+CTRL_PIP = "\x01P"  # 애드온 → 프로그램: 방송 미니창 켜기/끄기 ("on|off|toggle" + "|" + 채팅창 위치)
+CTRL_GEOM = "\x01G"  # 애드온 → 프로그램: 르니톡 채팅창 위치/크기 (미니창을 그 위에 붙이려고)
+PIP_TITLE = "르니톡 PIP"  # 미니창으로 옮긴 방송 탭의 제목 앞부분 (프로그램이 이 창을 찾아 와우 위에 고정)
+toast_q: "queue.Queue[tuple]" = queue.Queue()  # 와우 위에 잠깐 띄울 알림 (글, 종류)
+pending_pip = {}  # 확장에 보낼 미니창 요청 {"want": "on"/"off", "t"}
+last_toast = {}  # 같은 알림 반복 방지: 키 → 시간
+
+
+def toast(text, kind="info", key=None, every=0):
+    """와우 위에 잠깐 알림 띄우기 (어느 스레드에서 불러도 됨). key/every 로 같은 알림을 every 초에 한 번만."""
+    if key and every:
+        now = time.time()
+        if now - last_toast.get(key, 0) < every:
+            return
+        last_toast[key] = now
+    log("알림: " + text)
+    toast_q.put((text, kind))
 
 
 def target_bj():
@@ -166,6 +184,16 @@ def resolve_target(text):
                       else f"'{t}' 닉네임으로 지금 방송 중인 스트리머를 못 찾았어요. 방송 중인지, 닉네임이 맞는지 확인해 주세요.")
 
 
+def addon_state():
+    """애드온 제목줄에 보일 방송 상태: notfound(못 찾음) / live / off / "" (모름)"""
+    fail = cfg.get("last_fail") or {}
+    if fail.get("t", 0) > (cfg.get("bj_time") or 0):
+        return "notfound"
+    if status["live_known"] == target_bj():
+        return "live" if status["target_live"] else "off"
+    return ""
+
+
 def write_addon_target():
     """와우 애드온이 다음 접속//reload 때 읽을 '연결한 방송' 정보 파일 쓰기"""
     wd = cfg.get("wowdir")
@@ -178,7 +206,9 @@ def write_addon_target():
         return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"'
     body = (f"-- 르니톡 프로그램이 자동으로 쓰는 파일 (연결한 방송)\n"
             f"SoopBridge_AppTarget = {{ id = {lua(bj)}, nick = {lua(nick)}, t = {int(cfg.get('bj_time') or 0)} }}\n"
-            f"SoopBridge_AppInfo = {{ version = {lua(VERSION)}, latest = {lua(status['latest'].lstrip('vV'))} }}\n")
+            f"SoopBridge_AppInfo = {{ version = {lua(VERSION)}, latest = {lua(status['latest'].lstrip('vV'))} }}\n"
+            f"SoopBridge_AppStatus = {{ state = {lua(addon_state())}, q = {lua((cfg.get('last_fail') or {}).get('q', ''))}, "
+            f"t = {int(time.time())} }}\n")
     try:
         (Path(wd) / "Interface" / "AddOns" / "SoopBridge" / "Target.lua").write_text(body, encoding="utf-8")
     except Exception as e:
@@ -199,8 +229,15 @@ def set_target(text, source, open_tab=True):
     bj, nick, err = resolve_target(text)
     if not bj:
         log(err)
+        cfg["last_fail"] = {"q": (text or "").strip()[:60], "t": int(time.time())}
+        save_cfg(cfg)
+        write_addon_target()
+        if source == "와우에서":
+            toast(err, "warn")
         return None, err
     old = target_bj()
+    if old != bj:
+        status["live_known"] = ""
     cfg["bj"] = bj
     cfg["bj_time"] = int(time.time())
     save_cfg(cfg)
@@ -208,7 +245,12 @@ def set_target(text, source, open_tab=True):
         remember_nick(bj, nick)
     write_addon_target()
     log(f"연결할 방송: {target_label(bj)}  ({source})")
+    if source == "와우에서":
+        toast(f"{target_label(bj)} 방송에 연결했어요", "ok")
     now = time.time()
+    if old != bj and now - status["pip_seen"] < 3:
+        # 미니창으로 보던 중에 방송을 바꾸면, 새 방송 탭도 미니창으로
+        pending_pip.clear(); pending_pip.update({"want": "on", "t": now})
     if pending_close.get("from") == bj:  # 다시 그 방송으로 돌아왔으면 닫지 않음
         pending_close.clear()
     if open_tab and now - tabs.get(bj, 0) > 3:  # 이미 열려 있는 방송이면 그대로
@@ -310,6 +352,109 @@ def set_autostart(on):
         log(f"자동 실행 설정 실패: {e}")
         return False
 
+# ===== 와우 위 알림 / 방송 미니창 =====
+def warn_if_cant_send():
+    """와우에서 보낸 말이 바로 못 나가는 상황이면 와우 위에 알려 줌"""
+    now = time.time()
+    tgt = target_label()
+    if now - status["ext_target_last"] < 3:
+        if not status["target_live"]:
+            toast(f"{tgt} 방송이 꺼져 있어서 채팅을 못 보내요", "warn", key="off", every=10)
+    elif now - status["ext_last"] < 3:
+        toast(f"크롬에 {tgt} 방송 탭이 없어요 (다른 방송이 열려 있음). 30초 안에 열면 보내요", "warn", key="notab", every=10)
+    else:
+        toast(f"크롬에 숲 방송 탭이 없어요. 30초 안에 {tgt} 방송을 열면 보내요", "warn", key="notab", every=10)
+
+
+def save_geom(text):
+    """애드온이 보낸 채팅창 위치 "x,y,w,h" (와우 화면 대비 1/10000 비율) 저장"""
+    try:
+        g = [int(v) for v in text.strip().split(",")[:4]]
+    except ValueError:
+        return
+    if len(g) == 4 and all(0 <= v <= 20000 for v in g) and g != cfg.get("chat_geom"):
+        cfg["chat_geom"] = g
+        save_cfg(cfg)
+
+
+def request_pip(mode, geom=""):
+    if geom:
+        save_geom(geom)
+    now = time.time()
+    on_now = now - status["pip_seen"] < 3
+    want = {"on": "on", "켜기": "on", "off": "off", "끄기": "off"}.get(mode, "off" if on_now else "on")
+    if want == "on" and on_now or want == "off" and not on_now:
+        return
+    if want == "on" and now - status["ext_target_last"] > 3:
+        toast(f"크롬에 {target_label()} 방송 탭이 없어서 미니창을 못 켜요", "warn")
+        return
+    pending_pip.clear(); pending_pip.update({"want": want, "t": now})
+    log("방송 미니창 " + ("켜는 중" if want == "on" else "끄는 중"))
+
+
+def find_pip_window():
+    u = ctypes.windll.user32
+    found = []
+    EnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def cb(hwnd, _):
+        if u.IsWindowVisible(hwnd):
+            t = ctypes.create_unicode_buffer(256)
+            u.GetWindowTextW(hwnd, t, 256)
+            if t.value.startswith(PIP_TITLE):
+                found.append(hwnd)
+        return True
+    u.EnumWindows(EnumProc(cb), 0)
+    return found[0] if found else None
+
+
+def pip_loop():
+    """미니창(크롬 팝업 창)을 와우 르니톡 채팅창 바로 위(공간이 없으면 아래)에 붙이고, 와우가 앞에 있을 때만 맨 위로"""
+    u = ctypes.windll.user32
+    HWND_TOPMOST, HWND_NOTOPMOST = wintypes.HWND(-1), wintypes.HWND(-2)
+    SWP_NOACTIVATE = 0x0010
+    last = None
+    extra_h = 0  # 크롬 창 제목줄 높이 (재서 보정)
+    while True:
+        time.sleep(0.4)
+        try:
+            if time.time() - status["pip_seen"] > 3:
+                last = None
+                continue
+            hwnd = find_pip_window()
+            rect, geom = status["wow_rect"], cfg.get("chat_geom")
+            if not hwnd or not rect:
+                continue
+            fg = u.GetForegroundWindow()
+            front = fg in (status["wow_hwnd"], hwnd)
+            rx, ry, rw, rh = rect
+            if geom:
+                fx, fy, fw, fh = (v / 10000 for v in geom)
+            else:
+                fx, fy, fw, fh = 0.01, 0.6, 0.2, 0.15
+            w = max(240, int(fw * rw))
+            h = int(w * 9 / 16) + extra_h
+            x = rx + int(fx * rw)
+            top = ry + int(fy * rh)
+            y = top - h
+            if y < ry:  # 채팅창 위에 자리가 없으면 아래에
+                y = top + int(fh * rh)
+            x = max(rx, min(x, rx + rw - w))
+            want = (x, y, w, h, front)
+            if want != last:
+                u.SetWindowPos(hwnd, HWND_TOPMOST if front else HWND_NOTOPMOST, x, y, w, h, SWP_NOACTIVATE)
+                last = want
+                wr, cr = wintypes.RECT(), wintypes.RECT()
+                u.GetWindowRect(hwnd, ctypes.byref(wr)); u.GetClientRect(hwnd, ctypes.byref(cr))
+                diff = (wr.bottom - wr.top) - (cr.bottom - cr.top)
+                if 0 <= diff < 200 and diff != extra_h:
+                    extra_h = diff
+                    last = None
+        except Exception as e:
+            log(f"미니창 위치 맞추기 실패: {e}")
+            time.sleep(3)
+
+
 # ===== 와우 화면 신호 읽기 =====
 # 애드온이 화면 왼쪽 위에 잠깐 그리는 색 블록을 읽어서 메시지로 되돌린다 (Windows 전용, 추가 설치 없음).
 import ctypes
@@ -360,6 +505,7 @@ class Screen:
         if not f:
             return None
         hwnd, title, cls = f
+        status["wow_hwnd"] = hwnd
         if getattr(self, "_last", None) != title:
             log(f"와우 창 찾음: {title}")
             self._last = title
@@ -403,8 +549,10 @@ def pixel_reader():
         rect = scr.wow_rect()
         if not rect:
             status["wow"] = False
+            status["wow_rect"] = None
             continue
         status["wow"] = True
+        status["wow_rect"] = rect
         x0, y0, cw, ch = rect
         if ch <= 0:
             continue
@@ -454,10 +602,18 @@ def pixel_reader():
             log("와우에서 방송 연결 요청: " + want)
             threading.Thread(target=set_target, args=(want, "와우에서"), daemon=True).start()
             continue
+        if raw.startswith(CTRL_PIP):
+            mode, _, geom = raw[len(CTRL_PIP):].partition("|")
+            request_pip(mode.strip(), geom)
+            continue
+        if raw.startswith(CTRL_GEOM):
+            save_geom(raw[len(CTRL_GEOM):])
+            continue
         msg = raw.strip()[:MAXLEN]
         if msg:
             log("와우에서 받음: " + msg)
             q.put((time.time(), msg))
+            warn_if_cant_send()
 
 
 
@@ -567,9 +723,18 @@ class Handler(BaseHTTPRequestHandler):
                     remember_nick(bj, nick)
             msgs = []
             live = qs.get("live", ["1"])[0] == "1"  # 옛 확장은 live 를 안 보냄 → 방송 중으로 봄
+            pip = qs.get("pip", ["0"])[0] == "1"
+            if pip:
+                status["pip_seen"] = now
             if bj == target_bj():  # 연결한 방송 탭에만 메시지를 넘김
                 status["ext_target_last"] = now
+                if status["live_known"] == bj and status["target_live"] != live:
+                    toast(f"{target_label(bj)} 방송이 " + ("시작됐어요" if live else "꺼졌어요"), "ok" if live else "warn")
+                changed = status["live_known"] != bj or status["target_live"] != live
                 status["target_live"] = live
+                status["live_known"] = bj
+                if changed:
+                    write_addon_target()
                 if live:
                     with q_lock:
                         while True:
@@ -582,6 +747,16 @@ class Handler(BaseHTTPRequestHandler):
                             else:
                                 log("너무 늦어서 안 보냄: " + m)
             resp = {"messages": msgs, "version": VERSION}
+            if pending_pip:
+                want = pending_pip["want"]
+                if now - pending_pip["t"] > 20:
+                    if want == "on":
+                        toast("미니창을 못 켰어요 (크롬 방송 탭이 응답이 없어요)", "warn")
+                    pending_pip.clear()
+                elif want == "on" and bj == target_bj() and not pip:
+                    resp["pip"] = "on"; pending_pip.clear()
+                elif want == "off" and pip:
+                    resp["pip"] = "off"; pending_pip.clear()
             if pending_nav and bj == pending_nav.get("from"):
                 resp["navigate"] = pending_nav["to"]
                 log(f"보던 방송 탭을 {target_label(pending_nav['to'])} 방송으로 바꿈")
@@ -605,6 +780,68 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+
+# ===== 와우 위에 잠깐 뜨는 알림 =====
+class Toast:
+    """와우 창 위쪽 가운데에 몇 초 뜨는 작은 알림. 클릭이 통과되고 포커스를 뺏지 않아 게임 입력이 안 끊김."""
+    COLORS = {"info": "#3b2a5c", "ok": "#1f5c3a", "warn": "#7a3a12"}
+
+    def __init__(self, root):
+        self.root = root
+        w = tk.Toplevel(root); self.w = w
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        self.lbl = tk.Label(w, text="", fg="#ffffff", bg=self.COLORS["info"], font=("맑은 고딕", 12, "bold"),
+                            padx=18, pady=9)
+        self.lbl.pack()
+        self.job = None
+        self.hide()
+        w.update_idletasks()
+        try:
+            u = ctypes.windll.user32
+            h = self.hwnd()
+            ex = u.GetWindowLongW(h, -20)
+            # WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED
+            u.SetWindowLongW(h, -20, ex | 0x08000000 | 0x00000080 | 0x00000020 | 0x00080000)
+        except Exception as e:
+            log(f"알림 창 설정 실패: {e}")
+
+    def hwnd(self):
+        try:
+            return int(self.w.wm_frame(), 16)
+        except Exception:
+            return self.w.winfo_id()
+
+    def hide(self):
+        try:
+            self.w.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        self.w.geometry("+-4000+-4000")
+
+    def show(self, text, kind="info", secs=4.5):
+        col = self.COLORS.get(kind, self.COLORS["info"])
+        self.lbl.config(text="르니톡  " + text, bg=col)
+        self.w.update_idletasks()
+        tw = self.w.winfo_reqwidth()
+        rect = status["wow_rect"]
+        if rect:
+            rx, ry, rw, rh = rect
+        else:
+            rx, ry = 0, 0
+            rw, rh = self.w.winfo_screenwidth(), self.w.winfo_screenheight()
+        x, y = rx + (rw - tw) // 2, ry + int(rh * 0.14)
+        self.w.geometry(f"+{x}+{y}")
+        try:
+            self.w.attributes("-alpha", 0.93)
+            # 맨 위로 (포커스는 안 가져감)
+            ctypes.windll.user32.SetWindowPos(self.hwnd(), wintypes.HWND(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
+        except Exception:
+            pass
+        if self.job:
+            self.root.after_cancel(self.job)
+        self.job = self.root.after(int(secs * 1000), self.hide)
 
 
 # ===== 상태 창 =====
@@ -655,6 +892,7 @@ class App:
         threading.Thread(target=update_loop, args=(self,), daemon=True).start()
         if not cfg.get("ext_guided"):
             root.after(800, self.guide_extension)
+        self.toast = Toast(root)
         root.after(300, self.tick)
 
     def setup_addon(self):
@@ -723,7 +961,7 @@ class App:
              "아래 버튼을 누르고, 크롬 새 탭 주소창에 붙여넣기(Ctrl+V) → 엔터\n(보안 때문에 프로그램이 이 화면을 직접 못 열어요)",
              [("chrome://extensions 주소 복사", lambda: self.copy("chrome://extensions", "확장 화면 주소를"))])
         step(2, "'개발자 모드' 켜기", "확장 화면 오른쪽 위의 '개발자 모드' 스위치를 켜요.")
-        step(3, "'압축해제된 확장 프로그램을 로드합니다' 클릭",
+        step(3, "'압축해제된 확장 프로그램 로드' 클릭",
              "폴더 선택 창이 뜨면, 아래 버튼으로 폴더 경로를 복사해서 폴더 선택 창 맨 위 주소칸에 붙여넣기 → 엔터 → '폴더 선택'",
              [("폴더 경로 복사", lambda: self.copy(str(ext), "확장 폴더 경로를")),
               ("폴더 열어보기", lambda: os.startfile(str(ext)))])
@@ -771,6 +1009,7 @@ class App:
                     q.put((t0, m))
                 else:
                     log("방송 탭이 없거나 방송이 꺼져 있어서 못 보냄: " + m)
+                    toast("못 보냈어요 (방송 탭이 없거나 꺼져 있음): " + m[:30], "warn")
 
     def tick(self):
         self.wow_lbl.config(text="와우: 연결됨 ✅" if status["wow"] else "와우: 창을 못 찾음 (와우를 창 모드/전체 창 모드로 켜 주세요)",
@@ -792,6 +1031,14 @@ class App:
         if status["latest_url"] and not self.upd_btn.winfo_ismapped():
             self.upd_btn.config(text=f"⬆ 새 버전 {status['latest']} 업데이트 (지금 {VERSION})")
             self.upd_btn.pack(fill="x", padx=10, pady=(2, 4), after=self.addon_lbl)
+        items = []
+        while True:
+            try:
+                items.append(toast_q.get_nowait())
+            except queue.Empty:
+                break
+        if items:
+            self.toast.show(*items[-1])  # 한꺼번에 여러 개면 마지막 것만
         while True:
             try:
                 line = log_q.get_nowait()
@@ -807,7 +1054,12 @@ def main():
     except OSError:
         r = tk.Tk(); r.withdraw(); messagebox.showinfo(APP, "이미 실행 중이에요."); return
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # 창 좌표를 실제 화면 픽셀로 (알림/미니창 위치용)
+    except Exception:
+        pass
     threading.Thread(target=pixel_reader, daemon=True).start()
+    threading.Thread(target=pip_loop, daemon=True).start()
     root = tk.Tk()
     App(root)
     root.mainloop()

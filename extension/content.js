@@ -8,6 +8,9 @@ const SELECTORS = [
   "textarea",
 ];
 let lastSent = 0;
+const PIP_TITLE = "르니톡 PIP"; // PC 프로그램이 이 제목으로 미니창을 찾아 와우 위에 붙임
+let pipOn = false, origTitle = "", lastNick = "";
+const pipStyled = [];
 const MIN_INTERVAL = 1500;
 const pending = [];
 
@@ -64,6 +67,66 @@ function flush() {
   lastSent = Date.now();
 }
 
+// ===== 미니창 모드: 영상만 창 가득 보이게 (채팅 입력칸은 화면 밖으로 옮겨 둬서 전송은 계속 됨) =====
+function mark(el, css) {
+  if (el.dataset.ltPip === undefined) el.dataset.ltPip = el.getAttribute("style") || "";
+  el.setAttribute("style", el.dataset.ltPip + ";" + css);
+  pipStyled.push(el);
+}
+
+function clearPipStyle() {
+  while (pipStyled.length) {
+    const el = pipStyled.pop();
+    if (el.dataset.ltPip !== undefined) {
+      if (el.dataset.ltPip) el.setAttribute("style", el.dataset.ltPip); else el.removeAttribute("style");
+      delete el.dataset.ltPip;
+    }
+  }
+}
+
+function applyPipStyle() {
+  const v = document.querySelector("video");
+  if (!v) return;
+  if (v.dataset.ltPip !== undefined) return; // 이미 적용됨
+  clearPipStyle();
+  const OFF = "position:absolute!important;left:-30000px!important;top:0!important;opacity:0!important;pointer-events:none!important";
+  const FILL = "position:static!important;transform:none!important;margin:0!important;padding:0!important;" +
+    "width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;" +
+    "min-width:0!important;min-height:0!important;overflow:hidden!important";
+  let el = v;
+  while (el && el !== document.documentElement) {
+    const p = el.parentElement;
+    if (!p) break;
+    for (const sib of p.children) {
+      if (sib !== el && !["SCRIPT", "STYLE", "LINK", "META"].includes(sib.tagName)) mark(sib, OFF);
+    }
+    if (el !== v) mark(el, FILL);
+    el = p;
+  }
+  mark(v, "position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;" +
+    "object-fit:contain!important;background:#000!important;z-index:2147483647!important");
+  mark(document.documentElement, "overflow:hidden!important");
+}
+
+function setPip(on) {
+  if (on === pipOn) return;
+  pipOn = on;
+  if (on) {
+    origTitle = document.title;
+    applyPipStyle();
+  } else {
+    clearPipStyle();
+    if (document.title.startsWith(PIP_TITLE)) document.title = origTitle;
+  }
+}
+
+function keepPip() {
+  if (!pipOn) return;
+  applyPipStyle(); // 페이지가 영상을 새로 그렸으면 다시 적용
+  const want = PIP_TITLE + (lastNick ? " - " + lastNick : "");
+  if (document.title !== want) document.title = want;
+}
+
 let timers = [];
 function stopIfOrphaned() {
   // 확장이 다시 로드되면 이 스크립트는 끊긴 상태가 됨 → 스스로 멈추고 새 스크립트에 맡김
@@ -83,11 +146,17 @@ function poll() {
     const live = /^\d+$/.test(seg[1] || "") ? 1 : 0;
     // 탭 제목 "르니 - SOOP" 에서 스트리머 닉네임 (닉네임으로 연결할 때 쓰임)
     // (방송이 꺼져 있으면 제목에 아이디가 나와서 방송 중일 때만)
-    const m = (document.title || "").match(/^(.+?)\s+-\s+SOOP\s*$/i);
-    const nick = live && m ? m[1].trim() : "";
+    const title = document.title || "";
+    if (!title.startsWith(PIP_TITLE)) {
+      const m = title.match(/^(.+?)\s+-\s+SOOP\s*$/i);
+      lastNick = live && m ? m[1].trim() : "";
+    }
+    const nick = live ? lastNick : "";
     chrome.runtime.sendMessage({ type: "poll", bj, nick, live }, (res) => {
       if (chrome.runtime.lastError) return;
       if (res && res.messages) pending.push(...res.messages);
+      if (res && typeof res.pipMode === "boolean") setPip(res.pipMode);
+      keepPip();
     });
   } catch (e) {
     timers.forEach(clearInterval); // 확장이 다시 로드됨 → 이 스크립트는 종료
