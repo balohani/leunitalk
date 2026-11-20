@@ -104,8 +104,9 @@ function applyPipStyle() {
     el = p;
   }
   mark(v, "position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;" +
-    "object-fit:contain!important;background:#000!important;z-index:2147483647!important");
-  mark(document.documentElement, "overflow:hidden!important");
+    "object-fit:contain!important;background:#000!important;z-index:2147483647!important;pointer-events:none!important");
+  // 미니창을 끌어서 옮길 때 영상이 끌리거나 글자가 선택되지 않게
+  mark(document.documentElement, "overflow:hidden!important;user-select:none!important;background:#000!important");
 }
 
 function setPip(on) {

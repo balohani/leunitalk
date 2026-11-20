@@ -408,52 +408,110 @@ def find_pip_window():
     return found[0] if found else None
 
 
+def pip_target(rect):
+    """미니창에서 영상이 보일 자리 (x, y, 폭, 높이). 따로 옮겨 둔 자리가 있으면 거기, 아니면 르니톡 채팅창 바로 위."""
+    rx, ry, rw, rh = rect
+    free = cfg.get("pip_free")
+    if free:
+        fx, fy, fw = (v / 10000 for v in free[:3])
+        vw = max(200, int(fw * rw)); vh = int(vw * 9 / 16)
+        vx, vy = rx + int(fx * rw), ry + int(fy * rh)
+    else:
+        geom = cfg.get("chat_geom")
+        fx, fy, fw, fh = ((v / 10000 for v in geom) if geom else (0.01, 0.6, 0.2, 0.15))
+        vw = max(240, int(fw * rw)); vh = int(vw * 9 / 16)
+        vx = rx + int(fx * rw)
+        top = ry + int(fy * rh)
+        vy = top - vh
+        if vy < ry:  # 채팅창 위에 자리가 없으면 아래에
+            vy = top + int(fh * rh)
+    vx = max(rx, min(vx, rx + rw - vw))
+    vy = max(ry, min(vy, ry + rh - vh))
+    return vx, vy, vw, vh
+
+
 def pip_loop():
-    """미니창(크롬 팝업 창)을 와우 르니톡 채팅창 바로 위(공간이 없으면 아래)에 붙이고, 와우가 앞에 있을 때만 맨 위로.
-    크롬 제목줄과 테두리는 창 모양(영역)을 잘라서 숨기고 영상 부분만 보이게 한다."""
+    """미니창(크롬 팝업 창)을 와우 위에 맨 위로 붙여 둠 (와우가 앞에 있을 때만).
+    - 크롬 제목줄/테두리는 창 영역을 잘라서 숨기고 영상만 보이게
+    - 미니창을 마우스로 끌면 옮겨지고(따로 둔 자리 기억), 르니톡 채팅창 위에 다시 갖다 대면 붙음
+    - 오른쪽 아래 모서리를 끌면 크기 조절 (16:9 유지)"""
     u, g = ctypes.windll.user32, ctypes.windll.gdi32
     HWND_TOPMOST, HWND_NOTOPMOST = wintypes.HWND(-1), wintypes.HWND(-2)
     SWP_NOACTIVATE = 0x0010
     last = None
+    drag = None  # {"mode": "move"/"size", "mx", "my", "v": (x, y, w, h)}
+    cur = None   # 지금 보이는 영상 자리
+    was_down = False
+
+    def place(hwnd, v, front):
+        nonlocal last
+        vx, vy, vw, vh = v
+        ui_top, side = status["pip_ui"] or (0, 0)
+        want = (vx, vy, vw, vh, ui_top, side, front)
+        if want == last:
+            return
+        u.SetWindowPos(hwnd, HWND_TOPMOST if front else HWND_NOTOPMOST,
+                       vx - side, vy - ui_top, vw + 2 * side, vh + ui_top + side, SWP_NOACTIVATE)
+        if status["pip_ui"]:
+            rgn = g.CreateRectRgn(side, ui_top, side + vw, ui_top + vh)
+            if not u.SetWindowRgn(hwnd, rgn, True):
+                g.DeleteObject(rgn)
+        last = want
+
     while True:
-        time.sleep(0.4)
+        time.sleep(0.02 if drag else 0.2)
         try:
             if time.time() - status["pip_seen"] > 3:
-                last = None
+                last = cur = drag = None
                 continue
             hwnd = find_pip_window()
-            rect, geom = status["wow_rect"], cfg.get("chat_geom")
+            rect = status["wow_rect"]
             if not hwnd or not rect:
                 continue
-            fg = u.GetForegroundWindow()
-            front = fg in (status["wow_hwnd"], hwnd)
             rx, ry, rw, rh = rect
-            if geom:
-                fx, fy, fw, fh = (v / 10000 for v in geom)
-            else:
-                fx, fy, fw, fh = 0.01, 0.6, 0.2, 0.15
-            # 보이는 영상 부분 (vx, vy, vw, vh)
-            vw = max(240, int(fw * rw))
-            vh = int(vw * 9 / 16)
-            vx = rx + int(fx * rw)
-            top = ry + int(fy * rh)
-            vy = top - vh
-            if vy < ry:  # 채팅창 위에 자리가 없으면 아래에
-                vy = top + int(fh * rh)
-            vx = max(rx, min(vx, rx + rw - vw))
-            # 크롬 창 전체 = 영상 + 제목줄(ui_top) + 테두리(side)
-            ui_top, side = status["pip_ui"] or (0, 0)
-            wx, wy, ww, wh = vx - side, vy - ui_top, vw + 2 * side, vh + ui_top + side
-            want = (wx, wy, ww, wh, ui_top, side, front)
-            if want != last:
-                u.SetWindowPos(hwnd, HWND_TOPMOST if front else HWND_NOTOPMOST, wx, wy, ww, wh, SWP_NOACTIVATE)
-                if status["pip_ui"]:
-                    rgn = g.CreateRectRgn(side, ui_top, side + vw, ui_top + vh)
-                    if not u.SetWindowRgn(hwnd, rgn, True):
-                        g.DeleteObject(rgn)  # 실패했을 때만 직접 지움 (성공하면 창이 가져감)
-                last = want
+            front = u.GetForegroundWindow() in (status["wow_hwnd"], hwnd)
+            down = bool(u.GetAsyncKeyState(0x01) & 0x8000)
+            pt = wintypes.POINT(); u.GetCursorPos(ctypes.byref(pt))
+            if down and not was_down and cur:
+                vx, vy, vw, vh = cur
+                if vx <= pt.x < vx + vw and vy <= pt.y < vy + vh:
+                    corner = pt.x > vx + vw - 22 and pt.y > vy + vh - 22
+                    drag = {"mode": "size" if corner else "move", "mx": pt.x, "my": pt.y, "v": cur, "moved": False}
+            was_down = down
+            if drag:
+                dx, dy = pt.x - drag["mx"], pt.y - drag["my"]
+                if abs(dx) + abs(dy) > 6:
+                    drag["moved"] = True
+                vx, vy, vw, vh = drag["v"]
+                if drag["moved"]:
+                    if drag["mode"] == "move":
+                        vx, vy = vx + dx, vy + dy
+                    else:
+                        vw = max(200, min(rw, vw + dx)); vh = int(vw * 9 / 16)
+                    cur = (vx, vy, vw, vh)
+                    place(hwnd, cur, front)
+                if not down:  # 놓음
+                    if drag["moved"]:
+                        geom = cfg.get("chat_geom")
+                        snap = False
+                        if geom and drag["mode"] == "move":
+                            cx, cy, cw = rx + geom[0] * rw // 10000, ry + geom[1] * rh // 10000, geom[2] * rw // 10000
+                            # 영상 아래쪽이 채팅창 위쪽 근처이고 가로로 겹치면 다시 붙임
+                            snap = abs((vy + vh) - cy) < 45 and vx < cx + cw and vx + vw > cx
+                        if snap:
+                            cfg.pop("pip_free", None)
+                            log("미니창을 채팅창 위에 다시 붙였어요")
+                        else:
+                            cfg["pip_free"] = [int((vx - rx) * 10000 / rw), int((vy - ry) * 10000 / rh), int(vw * 10000 / rw)]
+                        save_cfg(cfg)
+                        last = None
+                    drag = None
+                continue
+            cur = pip_target(rect)
+            place(hwnd, cur, front)
         except Exception as e:
             log(f"미니창 위치 맞추기 실패: {e}")
+            drag = None
             time.sleep(3)
 
 
