@@ -444,6 +444,7 @@ def pip_loop():
     placed = None   # 프로그램이 마지막으로 놓은 창의 실제 자리 (사람이 옮겼는지 비교용)
     asked = None    # 프로그램이 마지막으로 요청한 자리 (크롬이 최소 크기로 바꿔 놓아도 다시 요청하지 않게)
     topmost = None
+    user_grab = False
 
     def wrect(h):
         r = wintypes.RECT(); u.GetWindowRect(h, ctypes.byref(r))
@@ -475,6 +476,9 @@ def pip_loop():
         f = cfg.get("pip_free")
         if not f or len(f) < 4:
             return None
+        if f[2] > 6000 or f[3] > 6000:  # 화면 절반보다 큰 미니창은 잘못 기억한 것 (예전 버그) → 버림
+            cfg.pop("pip_free", None); save_cfg(cfg)
+            return None
         rx, ry, rw, rh = rect
         return (rx + f[0] * rw // 10000, ry + f[1] * rh // 10000, f[2] * rw // 10000, f[3] * rh // 10000)
 
@@ -496,7 +500,15 @@ def pip_loop():
             front = u.GetForegroundWindow() in (status["wow_hwnd"], hwnd)
             mouse_down = bool(u.GetAsyncKeyState(0x01) & 0x8000)
             now_r = wrect(hwnd)
-            if placed and now_r != placed and not mouse_down:
+            if mouse_down and placed:
+                pt = wintypes.POINT(); u.GetCursorPos(ctypes.byref(pt))
+                x, y, w, h = placed
+                if x - 10 <= pt.x <= x + w + 10 and y - 10 <= pt.y <= y + h + 10:
+                    user_grab = True  # 사람이 미니창(제목줄/테두리)을 잡았음
+            if placed and now_r != placed and not mouse_down and not user_grab:
+                # 사람이 잡지 않았는데 바뀜 (미니창을 끄면서 확장이 창을 키운 경우 등) → 기억하지 않음
+                placed = now_r
+            if placed and now_r != placed and not mouse_down and user_grab:
                 # 사람이 옮기거나 크기를 바꿈 → 채팅창 위에 다시 갖다 댔으면 붙이고, 아니면 그 자리 기억
                 want = attached_rect(hwnd, rect)
                 near = abs((now_r[1] + now_r[3]) - (want[1] + want[3])) < 50 and abs(now_r[0] - want[0]) < 120
@@ -509,6 +521,8 @@ def pip_loop():
                                        int(now_r[2] * 10000 / rw), int(now_r[3] * 10000 / rh)]
                 save_cfg(cfg)
                 placed, asked = now_r, None
+            if not mouse_down:
+                user_grab = False
             if mouse_down:
                 continue  # 옮기는 중에는 건드리지 않음
             target = free_rect(rect) or attached_rect(hwnd, rect)
