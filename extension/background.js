@@ -75,7 +75,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       try {
         const r = await fetch("http://127.0.0.1:17777/poll?bj=" + encodeURIComponent(req.bj || "") +
           "&nick=" + encodeURIComponent((req.nick || "").slice(0, 40)) + "&live=" + (req.live ? 1 : 0) +
-          "&pip=" + (popup ? 1 : 0), { cache: "no-store" });
+          "&pip=" + (popup ? 1 : 0) + (popup && Array.isArray(req.ui) ? "&ui=" + req.ui.join(",") : ""), { cache: "no-store" });
         const d = await r.json();
         if (tab && d.navigate && /^[a-z0-9_]+$/i.test(d.navigate)) {
           sendResponse({ ok: true, messages: [], pipMode: popup });

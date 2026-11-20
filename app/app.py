@@ -38,7 +38,7 @@ cfg = load_cfg()
 q: "queue.Queue[str]" = queue.Queue()
 log_q: "queue.Queue[str]" = queue.Queue()
 status = {"wow": False, "ext_last": 0.0, "ext_bj": "", "ext_target_last": 0.0, "target_live": False,
-          "live_known": "", "pip_seen": 0.0, "wow_rect": None, "wow_hwnd": 0,
+          "live_known": "", "pip_seen": 0.0, "pip_ui": None, "wow_rect": None, "wow_hwnd": 0,
           "latest": "", "latest_url": "", "latest_notes": ""}
 UPDATE_EVERY = 3 * 3600  # 켜 둔 동안 3시간마다 새 버전 확인
 q_lock = threading.Lock()
@@ -409,12 +409,12 @@ def find_pip_window():
 
 
 def pip_loop():
-    """미니창(크롬 팝업 창)을 와우 르니톡 채팅창 바로 위(공간이 없으면 아래)에 붙이고, 와우가 앞에 있을 때만 맨 위로"""
-    u = ctypes.windll.user32
+    """미니창(크롬 팝업 창)을 와우 르니톡 채팅창 바로 위(공간이 없으면 아래)에 붙이고, 와우가 앞에 있을 때만 맨 위로.
+    크롬 제목줄과 테두리는 창 모양(영역)을 잘라서 숨기고 영상 부분만 보이게 한다."""
+    u, g = ctypes.windll.user32, ctypes.windll.gdi32
     HWND_TOPMOST, HWND_NOTOPMOST = wintypes.HWND(-1), wintypes.HWND(-2)
     SWP_NOACTIVATE = 0x0010
     last = None
-    extra_h = 0  # 크롬 창 제목줄 높이 (재서 보정)
     while True:
         time.sleep(0.4)
         try:
@@ -432,24 +432,26 @@ def pip_loop():
                 fx, fy, fw, fh = (v / 10000 for v in geom)
             else:
                 fx, fy, fw, fh = 0.01, 0.6, 0.2, 0.15
-            w = max(240, int(fw * rw))
-            h = int(w * 9 / 16) + extra_h
-            x = rx + int(fx * rw)
+            # 보이는 영상 부분 (vx, vy, vw, vh)
+            vw = max(240, int(fw * rw))
+            vh = int(vw * 9 / 16)
+            vx = rx + int(fx * rw)
             top = ry + int(fy * rh)
-            y = top - h
-            if y < ry:  # 채팅창 위에 자리가 없으면 아래에
-                y = top + int(fh * rh)
-            x = max(rx, min(x, rx + rw - w))
-            want = (x, y, w, h, front)
+            vy = top - vh
+            if vy < ry:  # 채팅창 위에 자리가 없으면 아래에
+                vy = top + int(fh * rh)
+            vx = max(rx, min(vx, rx + rw - vw))
+            # 크롬 창 전체 = 영상 + 제목줄(ui_top) + 테두리(side)
+            ui_top, side = status["pip_ui"] or (0, 0)
+            wx, wy, ww, wh = vx - side, vy - ui_top, vw + 2 * side, vh + ui_top + side
+            want = (wx, wy, ww, wh, ui_top, side, front)
             if want != last:
-                u.SetWindowPos(hwnd, HWND_TOPMOST if front else HWND_NOTOPMOST, x, y, w, h, SWP_NOACTIVATE)
+                u.SetWindowPos(hwnd, HWND_TOPMOST if front else HWND_NOTOPMOST, wx, wy, ww, wh, SWP_NOACTIVATE)
+                if status["pip_ui"]:
+                    rgn = g.CreateRectRgn(side, ui_top, side + vw, ui_top + vh)
+                    if not u.SetWindowRgn(hwnd, rgn, True):
+                        g.DeleteObject(rgn)  # 실패했을 때만 직접 지움 (성공하면 창이 가져감)
                 last = want
-                wr, cr = wintypes.RECT(), wintypes.RECT()
-                u.GetWindowRect(hwnd, ctypes.byref(wr)); u.GetClientRect(hwnd, ctypes.byref(cr))
-                diff = (wr.bottom - wr.top) - (cr.bottom - cr.top)
-                if 0 <= diff < 200 and diff != extra_h:
-                    extra_h = diff
-                    last = None
         except Exception as e:
             log(f"미니창 위치 맞추기 실패: {e}")
             time.sleep(3)
@@ -726,6 +728,15 @@ class Handler(BaseHTTPRequestHandler):
             pip = qs.get("pip", ["0"])[0] == "1"
             if pip:
                 status["pip_seen"] = now
+                try:
+                    top, side = (int(v) for v in qs.get("ui", [""])[0].split(",")[:2])
+                    if 0 <= top < 300 and 0 <= side < 50:
+                        # top 은 위아래 크롬 테두리 합 → 아래 테두리(≈ 옆 테두리)를 빼면 제목줄+위 테두리
+                        dt, ds = (cfg.get("pip_trim") or [0, 0])[:2]  # PC마다 어긋나면 설정으로 보정
+                        side2 = max(0, side + int(ds))
+                        status["pip_ui"] = (max(0, top - side + int(dt)), side2)
+                except ValueError:
+                    pass
             if bj == target_bj():  # 연결한 방송 탭에만 메시지를 넘김
                 status["ext_target_last"] = now
                 if status["live_known"] == bj and status["target_live"] != live:

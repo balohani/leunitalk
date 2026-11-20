@@ -152,7 +152,11 @@ function poll() {
       lastNick = live && m ? m[1].trim() : "";
     }
     const nick = live ? lastNick : "";
-    chrome.runtime.sendMessage({ type: "poll", bj, nick, live }, (res) => {
+    // 미니창일 때: 크롬 창 테두리/제목줄 두께(실제 픽셀) → 프로그램이 그 부분을 잘라내고 영상만 보이게 붙임
+    const dpr = window.devicePixelRatio || 1;
+    const ui = pipOn ? [Math.round(Math.max(0, window.outerHeight - window.innerHeight) * dpr),
+                        Math.round(Math.max(0, window.outerWidth - window.innerWidth) / 2 * dpr)] : null;
+    chrome.runtime.sendMessage({ type: "poll", bj, nick, live, ui }, (res) => {
       if (chrome.runtime.lastError) return;
       if (res && res.messages) pending.push(...res.messages);
       if (res && typeof res.pipMode === "boolean") setPip(res.pipMode);
