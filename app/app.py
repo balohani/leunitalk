@@ -475,15 +475,37 @@ def update_loop(app):
         time.sleep(UPDATE_EVERY)
 
 
+BETA_FLAG = "LeuniTalk.beta"  # exe 옆에 이 파일이 있거나 config 의 channel 이 beta 면 테스트 버전도 받음
+
+
+def is_beta():
+    if (cfg.get("channel") or "").lower() == "beta":
+        return True
+    try:
+        return (Path(sys.executable).parent / BETA_FLAG).exists()
+    except Exception:
+        return False
+
+
+def fetch_release():
+    """일반: 정식 릴리스 중 최신. 베타: 테스트용(prerelease) 포함 가장 높은 버전."""
+    import urllib.request
+    hdr = {"User-Agent": "LeuniTalk", "Accept": "application/vnd.github+json"}
+    if not is_beta():
+        req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest", headers=hdr)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)
+    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases?per_page=20", headers=hdr)
+    with urllib.request.urlopen(req, timeout=10) as r:
+        rels = [x for x in json.load(r) if not x.get("draft")]
+    return max(rels, key=lambda x: _ver(x.get("tag_name", "")), default={})
+
+
 def check_update(app):
     if not getattr(sys, "frozen", False):
         return  # 개발 중(파이썬 직접 실행)에는 건너뜀
-    import urllib.request
     try:
-        req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
-                                     headers={"User-Agent": "LeuniTalk", "Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            rel = json.load(r)
+        rel = fetch_release()
     except Exception as e:
         log(f"업데이트 확인 실패: {e}")
         return

@@ -324,8 +324,8 @@ end
 
 -- ===== 새 버전 알림 (PC 프로그램이 확인해서 Target.lua 에 적어 줌) =====
 local function verNum(v)
-    local a, b, c = tostring(v or ""):match("(%d+)%.?(%d*)%.?(%d*)")
-    return (tonumber(a) or 0) * 1000000 + (tonumber(b) or 0) * 1000 + (tonumber(c) or 0)
+    local a, b, c, d = tostring(v or ""):match("(%d+)%.?(%d*)%.?(%d*)%.?(%d*)")
+    return (tonumber(a) or 0) * 1000000000 + (tonumber(b) or 0) * 1000000 + (tonumber(c) or 0) * 1000 + (tonumber(d) or 0)
 end
 
 local function checkUpdate()

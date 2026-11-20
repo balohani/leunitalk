@@ -1,4 +1,4 @@
-# main 에 push 될 때마다 VERSION 을 보고, 아직 없는 버전이면, 윈도우에서 LeuniTalk.exe 를 빌드해 깃허브 릴리스(v버전)에 자동 업로드
+# main 에 push 될 때마다 (VERSION 이 네 자리면 테스트용 prerelease) VERSION 을 보고, 아직 없는 버전이면, 윈도우에서 LeuniTalk.exe 를 빌드해 깃허브 릴리스(v버전)에 자동 업로드
 name: release
 on:
   push:
@@ -17,6 +17,8 @@ jobs:
         run: |
           v=$(tr -d ' \r\n' < VERSION)
           echo "v=$v" >> "$GITHUB_OUTPUT"
+          # 네 자리 버전(1.0.10.1 같은)은 테스트용: prerelease 로 올려서 일반 사용자 자동 업데이트에는 안 잡힘
+          if [ "$(echo "$v" | tr -cd '.' | wc -c)" -ge 3 ]; then echo "pre=true" >> "$GITHUB_OUTPUT"; else echo "pre=false" >> "$GITHUB_OUTPUT"; fi
           if gh release view "v$v" >/dev/null 2>&1; then echo "exists=1" >> "$GITHUB_OUTPUT"; else echo "exists=0" >> "$GITHUB_OUTPUT"; fi
         env:
           GH_TOKEN: ${{ github.token }}
@@ -53,4 +55,5 @@ jobs:
           tag_name: v${{ steps.ver.outputs.v }}
           name: 르니톡 v${{ steps.ver.outputs.v }}
           files: dist/LeuniTalk.exe
+          prerelease: ${{ steps.ver.outputs.pre == 'true' }}
           generate_release_notes: true
