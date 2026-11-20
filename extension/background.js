@@ -14,9 +14,10 @@ async function maybeReload(serverVersion) {
   chrome.runtime.reload();
 }
 
-// 방송 미니창: 보던 방송 탭을 새 크롬 창 하나로 옮긴다. 일반 창이라 끌 때 원래 창으로 탭째 되돌릴 수 있음
-// (새로고침 없음 → 광고 다시 안 봄). 주소창/탭 줄은 PC 프로그램이 창을 잘라서 숨기고 위치/크기도 맞춤.
-const PIP_SIZE = { width: 480, height: 360 };
+// 방송 미니창: 보던 방송 탭을 작은 팝업 창(제목줄만 있는 창)으로 옮긴다. 위치/맨 위 고정은 PC 프로그램이 맞춤.
+// 끌 때는 탭을 다시 옮기지 않고(팝업 창 탭은 크롬 규칙상 못 옮김 → 옮기려면 새로고침+광고) 그 창을 크게 키워
+// 보통 방송 화면으로 되돌린다. 새로고침 없음.
+const PIP_SIZE = { width: 480, height: 300 };
 
 async function pipTabs() {
   const { pipTabs = [] } = await chrome.storage.local.get("pipTabs");
@@ -46,7 +47,9 @@ async function homeWindow(exceptWindowId) {
 async function swapTab(tab, bj, inPip) {
   const url = "https://play.sooplive.co.kr/" + bj;
   try {
-    if (inPip) {
+    // 팝업 창(미니창이었던 창)에는 탭을 더 못 넣음
+    const popupWin = inPip || (await chrome.windows.get(tab.windowId)).type === "popup";
+    if (popupWin) {
       // 미니창이면 원래 창에 새 방송을 열고 미니창은 닫음 (프로그램이 새 탭을 다시 미니창으로 뺌)
       const home = await homeWindow(tab.windowId);
       if (home) await chrome.tabs.create({ url, windowId: home.windowId, active: true });
@@ -59,22 +62,28 @@ async function swapTab(tab, bj, inPip) {
 }
 
 async function enterPip(tab) {
-  await chrome.storage.local.set({ pipHome: { windowId: tab.windowId, index: tab.index } });
   try {
-    await chrome.windows.create({ tabId: tab.id, type: "normal", focused: false, ...PIP_SIZE });
-    await setPipTab(tab.id, true); // 새 창으로 옮긴 다음에 표시 (창 테두리 두께를 새 창에서 재도록)
+    const win = await chrome.windows.get(tab.windowId);
+    if (win.type === "popup") {
+      // 전에 미니창으로 뺐던 창이면 그대로 다시 미니창으로 (크기/위치는 프로그램이 맞춤)
+      await chrome.storage.local.set({ pipBig: { left: win.left, top: win.top, width: win.width, height: win.height } });
+    } else {
+      await chrome.storage.local.set({
+        pipHome: { windowId: tab.windowId, index: tab.index },
+        pipBig: { left: win.left, top: win.top, width: win.width, height: win.height },
+      });
+      await chrome.windows.create({ tabId: tab.id, type: "popup", focused: false, ...PIP_SIZE });
+    }
+    await setPipTab(tab.id, true);
   } catch (e) {}
 }
 
 async function exitPip(tab) {
   await setPipTab(tab.id, false);
   try {
-    const home = await homeWindow(tab.windowId);
-    if (home) {
-      await chrome.tabs.move(tab.id, { windowId: home.windowId, index: home.index ?? -1 });
-      await chrome.tabs.update(tab.id, { active: true });
-    }
-    // 되돌아갈 창이 없으면 미니창이 그냥 보통 크롬 창으로 남음 (프로그램이 잘라 둔 모양도 풀어 줌)
+    const { pipBig } = await chrome.storage.local.get("pipBig");
+    const big = pipBig && pipBig.width > 400 ? pipBig : { width: 1280, height: 800 };
+    await chrome.windows.update(tab.windowId, { ...big, state: "normal" });
   } catch (e) {}
 }
 

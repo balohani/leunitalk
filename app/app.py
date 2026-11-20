@@ -431,118 +431,59 @@ def chrome_insets(hwnd):
     return ins if all(0 <= v < 400 for v in ins) else None
 
 
-def pip_target(rect):
-    """미니창에서 영상이 보일 자리 (x, y, 폭, 높이). 따로 옮겨 둔 자리가 있으면 거기, 아니면 르니톡 채팅창 바로 위."""
-    rx, ry, rw, rh = rect
-    free = cfg.get("pip_free")
-    if free:
-        fx, fy, fw = (v / 10000 for v in free[:3])
-        vw = max(200, int(fw * rw)); vh = int(vw * 9 / 16)
-        vx, vy = rx + int(fx * rw), ry + int(fy * rh)
-    else:
-        geom = cfg.get("chat_geom")
-        fx, fy, fw, fh = ((v / 10000 for v in geom) if geom else (0.01, 0.6, 0.2, 0.15))
-        vw = max(240, int(fw * rw)); vh = int(vw * 9 / 16)
-        vx = rx + int(fx * rw)
-        top = ry + int(fy * rh)
-        vy = top - vh
-        if vy < ry:  # 채팅창 위에 자리가 없으면 아래에
-            vy = top + int(fh * rh)
-    vx = max(rx, min(vx, rx + rw - vw))
-    vy = max(ry, min(vy, ry + rh - vh))
-    return vx, vy, vw, vh
-
-
 def pip_loop():
-    """미니창(크롬 팝업 창)을 와우 위에 맨 위로 붙여 둠 (와우가 앞에 있을 때만).
-    - 크롬 제목줄/테두리는 창 영역을 잘라서 숨기고 영상만 보이게
-    - 미니창을 마우스로 끌면 옮겨지고(따로 둔 자리 기억), 르니톡 채팅창 위에 다시 갖다 대면 붙음
-    - 오른쪽 아래 모서리를 끌면 크기 조절 (16:9 유지)"""
-    u, g = ctypes.windll.user32, ctypes.windll.gdi32
+    """미니창(크롬 팝업 창, 제목줄 있음)을 와우 위에 띄워 둠.
+    - 처음엔 르니톡 채팅창 바로 위에 붙임 (채팅창을 옮기면 따라감)
+    - 제목줄을 잡고 옮기거나 테두리로 크기를 바꾸면 그 자리/크기를 기억하고 더는 안 움직임
+      (채팅창 바로 위에 다시 갖다 대면 다시 붙음)
+    - 와우나 미니창이 앞에 있을 때만 맨 위로"""
+    u = ctypes.windll.user32
     HWND_TOPMOST, HWND_NOTOPMOST = wintypes.HWND(-1), wintypes.HWND(-2)
-    SWP_NOACTIVATE = 0x0010
-    last = None
-    drag = None  # {"mode": "move"/"size", "mx", "my", "v": (x, y, w, h)}
-    cur = None   # 지금 보이는 영상 자리
-    was_down = False
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE = 0x0010, 0x0002, 0x0001
+    pip_hwnd = None
+    placed = None   # 프로그램이 마지막으로 놓은 창의 실제 자리 (사람이 옮겼는지 비교용)
+    asked = None    # 프로그램이 마지막으로 요청한 자리 (크롬이 최소 크기로 바꿔 놓아도 다시 요청하지 않게)
+    topmost = None
 
-    last_actual = None
-    pip_hwnd = None  # 지금 미니창으로 쓰는 크롬 창 (끄면 잘라 둔 모양/맨 위 고정을 풀어 줌)
-
-    def place(hwnd, v, front, keep_bottom=False):
-        """영상 자리 v 에 맞춰 크롬 창을 놓고 영상 부분만 남게 자름. 크롬 최소 크기 때문에 더 커지면
-        실제 크기에 맞춰 자르고 (keep_bottom 이면 아래쪽을 맞춰) 실제로 보이는 자리를 돌려줌."""
-        nonlocal last, last_actual
-        vx, vy, vw, vh = v
-        # 주소창/탭 줄/테두리 두께: 크롬 창 안의 웹페이지 영역으로 직접 잼 (안 되면 확장이 알려 준 값)
-        ins = chrome_insets(hwnd)
-        if not ins and status["pip_ui"]:
-            t, sd = status["pip_ui"]
-            ins = (sd, t, sd, sd)
-        il, it, ir, ib = ins or (0, 0, 0, 0)
-        want = (vx, vy, vw, vh, ins, front)
-        if want == last and last_actual:
-            return last_actual
-        wx, wy, ww, wh = vx - il, vy - it, vw + il + ir, vh + it + ib
-        z = HWND_TOPMOST if front else HWND_NOTOPMOST
-        u.SetWindowPos(hwnd, z, wx, wy, ww, wh, SWP_NOACTIVATE)
-        r = wintypes.RECT(); u.GetWindowRect(hwnd, ctypes.byref(r))
-        aw, ah = r.right - r.left, r.bottom - r.top
-        if aw > ww + 2 or ah > wh + 2:  # 크롬이 더 작게는 안 줄어듦 → 실제 크기에 맞춤
-            vw, vh = aw - il - ir, ah - it - ib
-            if keep_bottom:
-                vy = vy + v[3] - vh
-                u.SetWindowPos(hwnd, z, wx, vy - it, aw, ah, SWP_NOACTIVATE)
-        if ins != logged.get("ins"):
-            logged["ins"] = ins
-            log(f"미니창 크롬 테두리(왼,위,오,아래): {ins}")
-        region[0] = (il, it, il + vw, it + vh) if ins else None
-        ensure_region(hwnd)
-        last = want
-        last_actual = (vx, vy, vw, vh)
-        return last_actual
-
-    region = [None]  # 남길 영역 (창 기준 좌표)
-    logged = {}
-
-    def ensure_region(hwnd):
-        """크롬은 창 크기가 바뀌거나 앞뒤가 바뀔 때 창 모양(영역)을 스스로 되돌림 → 다르면 다시 자름"""
-        want = region[0]
-        if not want:
-            return
-        box = wintypes.RECT()
-        kind = u.GetWindowRgnBox(hwnd, ctypes.byref(box))  # 0 = 영역 없음
-        if kind and (box.left, box.top, box.right, box.bottom) == want:
-            return
-        rgn = g.CreateRectRgn(*want)
-        if u.SetWindowRgn(hwnd, rgn, True):
-            n = logged.get("reset", 0) + 1
-            logged["reset"] = n
-            if n in (2, 20, 200):
-                log(f"크롬이 미니창 모양을 되돌려서 다시 자름 ({n}번째)")
-        else:
-            g.DeleteObject(rgn)
-            if not logged.get("fail"):
-                logged["fail"] = True
-                log("미니창 자르기 실패 (SetWindowRgn)")
+    def wrect(h):
+        r = wintypes.RECT(); u.GetWindowRect(h, ctypes.byref(r))
+        return (r.left, r.top, r.right - r.left, r.bottom - r.top)
 
     def release():
-        nonlocal pip_hwnd
+        nonlocal pip_hwnd, placed, topmost, asked
         if pip_hwnd and u.IsWindow(pip_hwnd):
-            u.SetWindowRgn(pip_hwnd, None, True)
-            u.SetWindowPos(pip_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002 | SWP_NOACTIVATE)
-        pip_hwnd = None
+            u.SetWindowPos(pip_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        pip_hwnd, placed, topmost, asked = None, None, None, None
+
+    def attached_rect(hwnd, rect):
+        """르니톡 채팅창 바로 위(자리가 없으면 아래)에 붙일 창 자리"""
+        rx, ry, rw, rh = rect
+        geom = cfg.get("chat_geom")
+        fx, fy, fw, fh = ((v / 10000 for v in geom) if geom else (0.01, 0.6, 0.2, 0.15))
+        il, it, ir, ib = chrome_insets(hwnd) or (8, 32, 8, 8)
+        vw = max(240, int(fw * rw)); vh = int(vw * 9 / 16)
+        ww, wh = vw + il + ir, vh + it + ib
+        wx = rx + int(fx * rw) - il
+        top = ry + int(fy * rh)
+        wy = top - wh + ib  # 아래 테두리(보이지 않는 부분)만큼은 채팅창과 겹쳐도 됨
+        if wy < ry:
+            wy = top + int(fh * rh)
+        wx = max(rx - il, min(wx, rx + rw - ww + ir))
+        return (wx, wy, ww, wh)
+
+    def free_rect(rect):
+        f = cfg.get("pip_free")
+        if not f or len(f) < 4:
+            return None
+        rx, ry, rw, rh = rect
+        return (rx + f[0] * rw // 10000, ry + f[1] * rh // 10000, f[2] * rw // 10000, f[3] * rh // 10000)
 
     while True:
-        time.sleep(0.02 if drag else 0.2)
+        time.sleep(0.25)
         try:
             if time.time() - status["pip_seen"] > 3:
                 if pip_hwnd:
                     release()
-                last = cur = drag = None
-                region[0] = None
-                logged.clear()
-                status["pip_ui"] = None  # 다음에 미니창을 켜면 다시 잼
                 continue
             hwnd = find_pip_window()
             rect = status["wow_rect"]
@@ -553,47 +494,35 @@ def pip_loop():
                 pip_hwnd = hwnd
             rx, ry, rw, rh = rect
             front = u.GetForegroundWindow() in (status["wow_hwnd"], hwnd)
-            down = bool(u.GetAsyncKeyState(0x01) & 0x8000)
-            pt = wintypes.POINT(); u.GetCursorPos(ctypes.byref(pt))
-            if down and not was_down and cur:
-                vx, vy, vw, vh = cur
-                if vx <= pt.x < vx + vw and vy <= pt.y < vy + vh:
-                    corner = pt.x > vx + vw - 22 and pt.y > vy + vh - 22
-                    drag = {"mode": "size" if corner else "move", "mx": pt.x, "my": pt.y, "v": cur, "moved": False}
-            was_down = down
-            if drag:
-                dx, dy = pt.x - drag["mx"], pt.y - drag["my"]
-                if abs(dx) + abs(dy) > 6:
-                    drag["moved"] = True
-                vx, vy, vw, vh = drag["v"]
-                if drag["moved"]:
-                    if drag["mode"] == "move":
-                        vx, vy = vx + dx, vy + dy
-                    else:
-                        vw = max(200, min(rw, vw + dx)); vh = int(vw * 9 / 16)
-                    cur = place(hwnd, (vx, vy, vw, vh), front)
-                if not down:  # 놓음
-                    if drag["moved"]:
-                        geom = cfg.get("chat_geom")
-                        snap = False
-                        if geom and drag["mode"] == "move":
-                            cx, cy, cw = rx + geom[0] * rw // 10000, ry + geom[1] * rh // 10000, geom[2] * rw // 10000
-                            # 영상 아래쪽이 채팅창 위쪽 근처이고 가로로 겹치면 다시 붙임
-                            snap = abs((vy + vh) - cy) < 45 and vx < cx + cw and vx + vw > cx
-                        if snap:
-                            cfg.pop("pip_free", None)
-                            log("미니창을 채팅창 위에 다시 붙였어요")
-                        else:
-                            cfg["pip_free"] = [int((vx - rx) * 10000 / rw), int((vy - ry) * 10000 / rh), int(vw * 10000 / rw)]
-                        save_cfg(cfg)
-                        last = None
-                    drag = None
-                continue
-            cur = place(hwnd, pip_target(rect), front, keep_bottom=not cfg.get("pip_free"))
-            ensure_region(hwnd)
+            mouse_down = bool(u.GetAsyncKeyState(0x01) & 0x8000)
+            now_r = wrect(hwnd)
+            if placed and now_r != placed and not mouse_down:
+                # 사람이 옮기거나 크기를 바꿈 → 채팅창 위에 다시 갖다 댔으면 붙이고, 아니면 그 자리 기억
+                want = attached_rect(hwnd, rect)
+                near = abs((now_r[1] + now_r[3]) - (want[1] + want[3])) < 50 and abs(now_r[0] - want[0]) < 120
+                resized = (now_r[2], now_r[3]) != (placed[2], placed[3])
+                if near and not resized:
+                    cfg.pop("pip_free", None)
+                    log("미니창을 채팅창 위에 붙였어요")
+                else:
+                    cfg["pip_free"] = [int((now_r[0] - rx) * 10000 / rw), int((now_r[1] - ry) * 10000 / rh),
+                                       int(now_r[2] * 10000 / rw), int(now_r[3] * 10000 / rh)]
+                save_cfg(cfg)
+                placed, asked = now_r, None
+            if mouse_down:
+                continue  # 옮기는 중에는 건드리지 않음
+            target = free_rect(rect) or attached_rect(hwnd, rect)
+            if target != asked:
+                u.SetWindowPos(hwnd, HWND_TOPMOST if front else HWND_NOTOPMOST, *target, SWP_NOACTIVATE)
+                asked = target
+                placed = wrect(hwnd)  # 크롬 최소 크기 때문에 다르게 놓일 수 있어서 실제 자리
+                topmost = front
+            elif topmost != front:
+                u.SetWindowPos(hwnd, HWND_TOPMOST if front else HWND_NOTOPMOST, 0, 0, 0, 0,
+                               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                topmost = front
         except Exception as e:
             log(f"미니창 위치 맞추기 실패: {e}")
-            drag = None
             time.sleep(3)
 
 
@@ -879,6 +808,10 @@ class Handler(BaseHTTPRequestHandler):
             pip = qs.get("pip", ["0"])[0] == "1"
             if pip:
                 status["pip_seen"] = now
+                status["pip_bj"] = bj
+            elif bj and bj == status.get("pip_bj"):
+                status["pip_seen"] = 0.0  # 미니창을 껐음 → 바로 위치 맞추기를 멈춤 (커진 창을 다시 줄이지 않게)
+                status["pip_bj"] = ""
                 try:
                     top, side = (int(v) for v in qs.get("ui", [""])[0].split(",")[:2])
                     # 처음 잰 값으로 고정: 창 크기를 바꿀 때마다 반올림 때문에 1픽셀씩 달라져서

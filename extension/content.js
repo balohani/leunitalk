@@ -75,12 +75,12 @@ function mark(el, css) {
 }
 
 function clearPipStyle() {
-  while (pipStyled.length) {
-    const el = pipStyled.pop();
-    if (el.dataset.ltPip !== undefined) {
-      if (el.dataset.ltPip) el.setAttribute("style", el.dataset.ltPip); else el.removeAttribute("style");
-      delete el.dataset.ltPip;
-    }
+  // 표시해 둔 요소를 페이지에서 직접 찾아서 되돌림 (확장이 다시 로드돼 목록을 잃어버린 경우도 정리됨)
+  pipStyled.length = 0;
+  for (const el of document.querySelectorAll("[data-lt-pip]")) {
+    const prev = el.dataset.ltPip;
+    if (prev) el.setAttribute("style", prev); else el.removeAttribute("style");
+    delete el.dataset.ltPip;
   }
 }
 
@@ -160,7 +160,11 @@ function poll() {
     chrome.runtime.sendMessage({ type: "poll", bj, nick, live, ui }, (res) => {
       if (chrome.runtime.lastError) return;
       if (res && res.messages) pending.push(...res.messages);
-      if (res && typeof res.pipMode === "boolean") setPip(res.pipMode);
+      if (res && typeof res.pipMode === "boolean") {
+        setPip(res.pipMode);
+        // 미니창이 아닌데 전 확장이 남긴 미니창 모양이 남아 있으면 정리 (채팅/별풍선이 안 보이던 문제)
+        if (!res.pipMode && document.querySelector("[data-lt-pip]")) clearPipStyle();
+      }
       keepPip();
     });
   } catch (e) {
