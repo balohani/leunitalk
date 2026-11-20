@@ -408,6 +408,29 @@ def find_pip_window():
     return found[0] if found else None
 
 
+def chrome_insets(hwnd):
+    """크롬 창에서 웹페이지가 그려지는 부분(자식 창 Chrome_RenderWidgetHostHWND)이 창 가장자리에서 얼마나
+    들어가 있는지 (왼쪽, 위, 오른쪽, 아래) 실제 픽셀. 주소창/탭 줄/테두리 두께를 화면 배율과 상관없이 정확히 앎."""
+    u = ctypes.windll.user32
+    best = []
+    EnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def cb(ch, _):
+        cls = ctypes.create_unicode_buffer(64)
+        u.GetClassNameW(ch, cls, 64)
+        if cls.value == "Chrome_RenderWidgetHostHWND" and u.IsWindowVisible(ch):
+            r = wintypes.RECT(); u.GetWindowRect(ch, ctypes.byref(r))
+            best.append(((r.right - r.left) * (r.bottom - r.top), r.left, r.top, r.right, r.bottom))
+        return True
+    u.EnumChildWindows(hwnd, EnumProc(cb), 0)
+    if not best:
+        return None
+    _, cl, ct, cr, cb_ = max(best)
+    w = wintypes.RECT(); u.GetWindowRect(hwnd, ctypes.byref(w))
+    ins = (cl - w.left, ct - w.top, w.right - cr, w.bottom - cb_)
+    return ins if all(0 <= v < 400 for v in ins) else None
+
+
 def pip_target(rect):
     """미니창에서 영상이 보일 자리 (x, y, 폭, 높이). 따로 옮겨 둔 자리가 있으면 거기, 아니면 르니톡 채팅창 바로 위."""
     rx, ry, rw, rh = rect
@@ -451,22 +474,27 @@ def pip_loop():
         실제 크기에 맞춰 자르고 (keep_bottom 이면 아래쪽을 맞춰) 실제로 보이는 자리를 돌려줌."""
         nonlocal last, last_actual
         vx, vy, vw, vh = v
-        ui_top, side = status["pip_ui"] or (0, 0)
-        want = (vx, vy, vw, vh, ui_top, side, front)
+        # 주소창/탭 줄/테두리 두께: 크롬 창 안의 웹페이지 영역으로 직접 잼 (안 되면 확장이 알려 준 값)
+        ins = chrome_insets(hwnd)
+        if not ins and status["pip_ui"]:
+            t, sd = status["pip_ui"]
+            ins = (sd, t, sd, sd)
+        il, it, ir, ib = ins or (0, 0, 0, 0)
+        want = (vx, vy, vw, vh, ins, front)
         if want == last and last_actual:
             return last_actual
-        wx, wy, ww, wh = vx - side, vy - ui_top, vw + 2 * side, vh + ui_top + side
+        wx, wy, ww, wh = vx - il, vy - it, vw + il + ir, vh + it + ib
         z = HWND_TOPMOST if front else HWND_NOTOPMOST
         u.SetWindowPos(hwnd, z, wx, wy, ww, wh, SWP_NOACTIVATE)
         r = wintypes.RECT(); u.GetWindowRect(hwnd, ctypes.byref(r))
         aw, ah = r.right - r.left, r.bottom - r.top
-        if aw > ww + 2 or ah > wh + 2:  # 크롬이 더 작게는 안 줄어듦
-            vw, vh = aw - 2 * side, ah - ui_top - side
+        if aw > ww + 2 or ah > wh + 2:  # 크롬이 더 작게는 안 줄어듦 → 실제 크기에 맞춤
+            vw, vh = aw - il - ir, ah - it - ib
             if keep_bottom:
                 vy = vy + v[3] - vh
-                u.SetWindowPos(hwnd, z, wx, vy - ui_top, aw, ah, SWP_NOACTIVATE)
-        if status["pip_ui"]:
-            rgn = g.CreateRectRgn(side, ui_top, side + vw, ui_top + vh)
+                u.SetWindowPos(hwnd, z, wx, vy - it, aw, ah, SWP_NOACTIVATE)
+        if ins:
+            rgn = g.CreateRectRgn(il, it, il + vw, it + vh)
             if not u.SetWindowRgn(hwnd, rgn, True):
                 g.DeleteObject(rgn)
         last = want
