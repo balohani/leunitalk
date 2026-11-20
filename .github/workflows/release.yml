@@ -56,4 +56,5 @@ jobs:
           name: 르니톡 v${{ steps.ver.outputs.v }}
           files: dist/LeuniTalk.exe
           prerelease: ${{ steps.ver.outputs.pre == 'true' }}
+          body_path: NOTES.md  # 프로그램 업데이트 창에 보이는 설명 (사용자용)
           generate_release_notes: true
