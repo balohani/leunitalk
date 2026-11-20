@@ -775,11 +775,22 @@ def apply_update(url):
         shutil.copyfileobj(r, f)
     cur = Path(sys.executable)
     bat = DATA / "update.bat"
+    # exe 하나짜리(onefile)는 프로세스가 둘(부모 + 지금 이 프로세스)이라, 이 프로세스가 끝나도 부모가 정리하는 동안
+    # exe 파일이 잠겨 있을 수 있음 → 둘 다 끝나길 기다리고, 덮어쓰기가 실패하면 될 때까지 다시 시도
+    # (전에는 덮어쓰기가 실패한 채 옛 exe 가 다시 켜져서 "또 업데이트" 가 한두 번 반복됐음)
+    pids = [os.getpid()] + ([os.getppid()] if getattr(sys, "frozen", False) else [])
+    wait = "".join(
+        f":w{p}\r\nset /a n+=1\r\nif %n% geq 30 goto swap\r\n"
+        f"tasklist /fi \"PID eq {p}\" | find \" {p} \" >nul && (timeout /t 1 /nobreak >nul & goto w{p})\r\n"
+        for p in pids)
     bat.write_text(
-        "@echo off\r\n"
-        f"for /l %%i in (1,1,20) do (timeout /t 1 /nobreak >nul & tasklist /fi \"PID eq {os.getpid()}\" | find \"{os.getpid()}\" >nul || goto swap)\r\n"
-        ":swap\r\n"
-        f"move /y \"{new}\" \"{cur}\" >nul\r\n"
+        "@echo off\r\nset n=0\r\n" + wait +
+        ":swap\r\nset m=0\r\n"
+        ":try\r\n"
+        f"move /y \"{new}\" \"{cur}\" >nul 2>&1 && goto run\r\n"
+        "set /a m+=1\r\nif %m% geq 30 goto run\r\n"
+        "timeout /t 1 /nobreak >nul\r\ngoto try\r\n"
+        ":run\r\n"
         f"start \"\" \"{cur}\"\r\n"
         "del \"%~f0\"\r\n", encoding="mbcs" if os.name == "nt" else "utf-8")
     # 새로 켜질 exe가 지금 프로세스의 임시 폴더(_MEI…)를 이어받지 않게 환경을 초기화
