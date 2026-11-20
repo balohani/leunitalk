@@ -545,6 +545,11 @@ def pip_loop():
                 user_grab = False
             if mouse_down:
                 continue  # 옮기는 중에는 건드리지 않음
+            if u.IsZoomed(hwnd) or u.IsIconic(hwnd):
+                # 최대화/최소화된 창은 크기를 못 바꿈 → 보통 창으로 (포커스는 안 가져감)
+                u.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
+                asked = placed = None
+                continue
             target = free_rect(rect) or attached_rect(hwnd, rect)
             if target != asked:
                 u.SetWindowPos(hwnd, HWND_TOPMOST if front else HWND_NOTOPMOST, *target, SWP_NOACTIVATE)

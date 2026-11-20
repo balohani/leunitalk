@@ -66,7 +66,14 @@ async function enterPip(tab) {
     const win = await chrome.windows.get(tab.windowId);
     if (win.type === "popup") {
       // 전에 미니창으로 뺐던 창이면 그대로 다시 미니창으로 (크기/위치는 프로그램이 맞춤)
-      await chrome.storage.local.set({ pipBig: { left: win.left, top: win.top, width: win.width, height: win.height } });
+      // 최대화/최소화/전체 화면이면 먼저 보통 창으로 (최대화된 창은 크기를 바꿀 수 없음)
+      if (win.state !== "normal") {
+        await chrome.storage.local.set({ pipBigState: win.state === "maximized" ? "maximized" : "normal" });
+        await chrome.windows.update(win.id, { state: "normal" });
+      } else {
+        await chrome.storage.local.set({ pipBigState: "normal",
+          pipBig: { left: win.left, top: win.top, width: win.width, height: win.height } });
+      }
     } else {
       await chrome.storage.local.set({
         pipHome: { windowId: tab.windowId, index: tab.index },
@@ -81,9 +88,10 @@ async function enterPip(tab) {
 async function exitPip(tab) {
   await setPipTab(tab.id, false);
   try {
-    const { pipBig } = await chrome.storage.local.get("pipBig");
+    const { pipBig, pipBigState } = await chrome.storage.local.get(["pipBig", "pipBigState"]);
     const big = pipBig && pipBig.width > 400 ? pipBig : { width: 1280, height: 800 };
     await chrome.windows.update(tab.windowId, { ...big, state: "normal" });
+    if (pipBigState === "maximized") await chrome.windows.update(tab.windowId, { state: "maximized" }); // 최대화해서 보던 창이면 다시 최대화
   } catch (e) {}
 }
 
