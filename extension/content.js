@@ -77,36 +77,64 @@ function mark(el, css) {
 function clearPipStyle() {
   // 표시해 둔 요소를 페이지에서 직접 찾아서 되돌림 (확장이 다시 로드돼 목록을 잃어버린 경우도 정리됨)
   pipStyled.length = 0;
+  let any = false;
   for (const el of document.querySelectorAll("[data-lt-pip]")) {
     const prev = el.dataset.ltPip;
     if (prev) el.setAttribute("style", prev); else el.removeAttribute("style");
     delete el.dataset.ltPip;
+    delete el.dataset.ltPipBox;
+    any = true;
   }
+  if (any) window.dispatchEvent(new Event("resize"));
+}
+
+// 방송 플레이어 상자 찾기: 영상에서 위로 올라가며, 크기가 영상과 거의 같은 가장 바깥 상자.
+// 광고 영상/광고 건너뛰기 버튼/조작 버튼이 다 이 상자 안에 겹쳐 있어서, 영상 하나만 꺼내면
+// 광고는 소리만 나고 건너뛰기도 못 함 → 플레이어 상자째로 창에 꽉 채운다.
+function findPlayer() {
+  const vids = [...document.querySelectorAll("video")];
+  if (!vids.length) return null;
+  const area = (el) => { const r = el.getBoundingClientRect(); return r.width * r.height; };
+  // 화면에 제일 크게 보이는 영상 기준
+  const v = vids.reduce((a, b) => (area(b) > area(a) ? b : a));
+  const vr = v.getBoundingClientRect();
+  let box = v;
+  for (let el = v.parentElement; el && el !== document.body; el = el.parentElement) {
+    const r = el.getBoundingClientRect();
+    if (r.width > vr.width * 1.15 + 20 || r.height > vr.height * 1.15 + 20) break;
+    box = el;
+  }
+  // 다른 영상(광고 등)이 상자 밖에 있으면 같이 들어가는 상자까지 넓힘
+  for (const o of vids) {
+    while (box !== document.body && !box.contains(o) && box.parentElement) box = box.parentElement;
+  }
+  return box === document.body ? v.parentElement : box;
 }
 
 function applyPipStyle() {
-  const v = document.querySelector("video");
-  if (!v) return;
-  if (v.dataset.ltPip !== undefined) return; // 이미 적용됨
+  // 이미 적용한 상자가 페이지에 그대로 있고 영상들이 다 그 안에 있으면 그대로 둠 (다시 계산하면 깜빡임)
+  const cur = document.querySelector("[data-lt-pip-box]");
+  const vids = [...document.querySelectorAll("video")];
+  if (cur && vids.every((v) => cur.contains(v))) return;
+  const box = findPlayer();
+  if (!box) return;
   clearPipStyle();
   const OFF = "position:absolute!important;left:-30000px!important;top:0!important;opacity:0!important;pointer-events:none!important";
-  const FILL = "position:static!important;transform:none!important;margin:0!important;padding:0!important;" +
-    "width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;" +
-    "min-width:0!important;min-height:0!important;overflow:hidden!important";
-  let el = v;
+  let el = box;
   while (el && el !== document.documentElement) {
     const p = el.parentElement;
     if (!p) break;
     for (const sib of p.children) {
       if (sib !== el && !["SCRIPT", "STYLE", "LINK", "META"].includes(sib.tagName)) mark(sib, OFF);
     }
-    if (el !== v) mark(el, FILL);
     el = p;
   }
-  mark(v, "position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;" +
-    "object-fit:contain!important;background:#000!important;z-index:2147483647!important;pointer-events:none!important");
-  // 미니창을 끌어서 옮길 때 영상이 끌리거나 글자가 선택되지 않게
-  mark(document.documentElement, "overflow:hidden!important;user-select:none!important;background:#000!important");
+  mark(box, "position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;" +
+    "max-width:none!important;max-height:none!important;margin:0!important;transform:none!important;" +
+    "z-index:2147483647!important;background:#000!important");
+  box.dataset.ltPipBox = "";
+  mark(document.documentElement, "overflow:hidden!important;background:#000!important");
+  window.dispatchEvent(new Event("resize")); // 플레이어가 새 크기에 맞게 다시 그리도록
 }
 
 function setPip(on) {
