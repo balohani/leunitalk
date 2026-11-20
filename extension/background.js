@@ -14,24 +14,41 @@ async function maybeReload(serverVersion) {
   chrome.runtime.reload();
 }
 
-// 미니창(팝업 창)에서 되돌아갈 일반 창: 미니창으로 빼기 전에 있던 창, 없으면 아무 일반 창
-async function homeWindow() {
+// 방송 미니창: 보던 방송 탭을 새 크롬 창 하나로 옮긴다. 일반 창이라 끌 때 원래 창으로 탭째 되돌릴 수 있음
+// (새로고침 없음 → 광고 다시 안 봄). 주소창/탭 줄은 PC 프로그램이 창을 잘라서 숨기고 위치/크기도 맞춤.
+const PIP_SIZE = { width: 480, height: 360 };
+
+async function pipTabs() {
+  const { pipTabs = [] } = await chrome.storage.local.get("pipTabs");
+  return pipTabs;
+}
+
+async function setPipTab(id, on) {
+  const list = (await pipTabs()).filter((x) => x !== id);
+  if (on) list.push(id);
+  await chrome.storage.local.set({ pipTabs: list });
+}
+
+chrome.tabs.onRemoved.addListener((id) => { setPipTab(id, false); });
+
+// 미니창에서 되돌아갈 창: 미니창으로 빼기 전에 있던 창, 없으면 미니창이 아닌 아무 일반 창
+async function homeWindow(exceptWindowId) {
   const { pipHome } = await chrome.storage.local.get("pipHome");
-  if (pipHome) {
+  if (pipHome && pipHome.windowId !== exceptWindowId) {
     try { await chrome.windows.get(pipHome.windowId); return pipHome; } catch (e) {}
   }
-  const wins = await chrome.windows.getAll({ windowTypes: ["normal"] });
+  const wins = (await chrome.windows.getAll({ windowTypes: ["normal"] })).filter((w) => w.id !== exceptWindowId);
   return wins.length ? { windowId: wins[0].id } : null;
 }
 
 // 탭 바꾸기: 페이지 안에서 주소를 바꾸면 "사이트에서 나가시겠습니까?" 같은 창에 막힐 수 있어서
 // 같은 자리에 새 방송 탭을 열고 옛 탭을 닫는다 (확장이 닫는 건 그런 창이 안 뜸)
-async function swapTab(tab, bj, popup) {
+async function swapTab(tab, bj, inPip) {
   const url = "https://play.sooplive.co.kr/" + bj;
   try {
-    if (popup) {
-      // 미니창에는 탭을 더 못 넣음 → 일반 창에 열고 미니창은 닫음 (프로그램이 새 탭을 다시 미니창으로 뺌)
-      const home = await homeWindow();
+    if (inPip) {
+      // 미니창이면 원래 창에 새 방송을 열고 미니창은 닫음 (프로그램이 새 탭을 다시 미니창으로 뺌)
+      const home = await homeWindow(tab.windowId);
       if (home) await chrome.tabs.create({ url, windowId: home.windowId, active: true });
       else await chrome.windows.create({ url, type: "normal", focused: false });
     } else {
@@ -41,28 +58,23 @@ async function swapTab(tab, bj, popup) {
   } catch (e) {}
 }
 
-// 방송 미니창: 보던 방송 탭을 작은 팝업 창으로 옮김 (위치/크기/맨 위 고정은 PC 프로그램이 맞춤)
-const PIP_SIZE = { width: 480, height: 300 };
 async function enterPip(tab) {
   await chrome.storage.local.set({ pipHome: { windowId: tab.windowId, index: tab.index } });
   try {
-    await chrome.windows.create({ tabId: tab.id, type: "popup", focused: false, ...PIP_SIZE });
-  } catch (e) {
-    // 탭째 옮기기가 안 되면 같은 방송을 미니창으로 새로 열고 원래 탭은 닫음
-    try {
-      await chrome.windows.create({ url: tab.url, type: "popup", focused: false, ...PIP_SIZE });
-      await chrome.tabs.remove(tab.id);
-    } catch (e2) {}
-  }
+    await chrome.windows.create({ tabId: tab.id, type: "normal", focused: false, ...PIP_SIZE });
+    await setPipTab(tab.id, true); // 새 창으로 옮긴 다음에 표시 (창 테두리 두께를 새 창에서 재도록)
+  } catch (e) {}
 }
 
-// 미니창 끄기: 팝업 창의 탭은 일반 창으로 못 옮겨서, 원래 창에 같은 방송을 다시 열고 미니창은 닫음
 async function exitPip(tab) {
+  await setPipTab(tab.id, false);
   try {
-    const home = await homeWindow();
-    if (home) await chrome.tabs.create({ url: tab.url, windowId: home.windowId, index: home.index, active: true });
-    else await chrome.windows.create({ url: tab.url, type: "normal", focused: false });
-    await chrome.tabs.remove(tab.id);
+    const home = await homeWindow(tab.windowId);
+    if (home) {
+      await chrome.tabs.move(tab.id, { windowId: home.windowId, index: home.index ?? -1 });
+      await chrome.tabs.update(tab.id, { active: true });
+    }
+    // 되돌아갈 창이 없으면 미니창이 그냥 보통 크롬 창으로 남음 (프로그램이 잘라 둔 모양도 풀어 줌)
   } catch (e) {}
 }
 
@@ -70,8 +82,8 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req && req.type === "poll") {
     (async () => {
       const tab = sender && sender.tab;
-      let popup = false; // 이 탭이 미니창(팝업 창) 안에 있는지
-      try { if (tab) popup = (await chrome.windows.get(tab.windowId)).type === "popup"; } catch (e) {}
+      let popup = false; // 이 탭이 미니창으로 빠져 있는지
+      try { if (tab) popup = (await pipTabs()).includes(tab.id); } catch (e) {}
       try {
         const r = await fetch("http://127.0.0.1:17777/poll?bj=" + encodeURIComponent(req.bj || "") +
           "&nick=" + encodeURIComponent((req.nick || "").slice(0, 40)) + "&live=" + (req.live ? 1 : 0) +

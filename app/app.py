@@ -443,25 +443,49 @@ def pip_loop():
     cur = None   # 지금 보이는 영상 자리
     was_down = False
 
-    def place(hwnd, v, front):
-        nonlocal last
+    last_actual = None
+    pip_hwnd = None  # 지금 미니창으로 쓰는 크롬 창 (끄면 잘라 둔 모양/맨 위 고정을 풀어 줌)
+
+    def place(hwnd, v, front, keep_bottom=False):
+        """영상 자리 v 에 맞춰 크롬 창을 놓고 영상 부분만 남게 자름. 크롬 최소 크기 때문에 더 커지면
+        실제 크기에 맞춰 자르고 (keep_bottom 이면 아래쪽을 맞춰) 실제로 보이는 자리를 돌려줌."""
+        nonlocal last, last_actual
         vx, vy, vw, vh = v
         ui_top, side = status["pip_ui"] or (0, 0)
         want = (vx, vy, vw, vh, ui_top, side, front)
-        if want == last:
-            return
-        u.SetWindowPos(hwnd, HWND_TOPMOST if front else HWND_NOTOPMOST,
-                       vx - side, vy - ui_top, vw + 2 * side, vh + ui_top + side, SWP_NOACTIVATE)
+        if want == last and last_actual:
+            return last_actual
+        wx, wy, ww, wh = vx - side, vy - ui_top, vw + 2 * side, vh + ui_top + side
+        z = HWND_TOPMOST if front else HWND_NOTOPMOST
+        u.SetWindowPos(hwnd, z, wx, wy, ww, wh, SWP_NOACTIVATE)
+        r = wintypes.RECT(); u.GetWindowRect(hwnd, ctypes.byref(r))
+        aw, ah = r.right - r.left, r.bottom - r.top
+        if aw > ww + 2 or ah > wh + 2:  # 크롬이 더 작게는 안 줄어듦
+            vw, vh = aw - 2 * side, ah - ui_top - side
+            if keep_bottom:
+                vy = vy + v[3] - vh
+                u.SetWindowPos(hwnd, z, wx, vy - ui_top, aw, ah, SWP_NOACTIVATE)
         if status["pip_ui"]:
             rgn = g.CreateRectRgn(side, ui_top, side + vw, ui_top + vh)
             if not u.SetWindowRgn(hwnd, rgn, True):
                 g.DeleteObject(rgn)
         last = want
+        last_actual = (vx, vy, vw, vh)
+        return last_actual
+
+    def release():
+        nonlocal pip_hwnd
+        if pip_hwnd and u.IsWindow(pip_hwnd):
+            u.SetWindowRgn(pip_hwnd, None, True)
+            u.SetWindowPos(pip_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002 | SWP_NOACTIVATE)
+        pip_hwnd = None
 
     while True:
         time.sleep(0.02 if drag else 0.2)
         try:
             if time.time() - status["pip_seen"] > 3:
+                if pip_hwnd:
+                    release()
                 last = cur = drag = None
                 status["pip_ui"] = None  # 다음에 미니창을 켜면 다시 잼
                 continue
@@ -469,6 +493,9 @@ def pip_loop():
             rect = status["wow_rect"]
             if not hwnd or not rect:
                 continue
+            if hwnd != pip_hwnd:
+                release()
+                pip_hwnd = hwnd
             rx, ry, rw, rh = rect
             front = u.GetForegroundWindow() in (status["wow_hwnd"], hwnd)
             down = bool(u.GetAsyncKeyState(0x01) & 0x8000)
@@ -489,8 +516,7 @@ def pip_loop():
                         vx, vy = vx + dx, vy + dy
                     else:
                         vw = max(200, min(rw, vw + dx)); vh = int(vw * 9 / 16)
-                    cur = (vx, vy, vw, vh)
-                    place(hwnd, cur, front)
+                    cur = place(hwnd, (vx, vy, vw, vh), front)
                 if not down:  # 놓음
                     if drag["moved"]:
                         geom = cfg.get("chat_geom")
@@ -508,8 +534,7 @@ def pip_loop():
                         last = None
                     drag = None
                 continue
-            cur = pip_target(rect)
-            place(hwnd, cur, front)
+            cur = place(hwnd, pip_target(rect), front, keep_bottom=not cfg.get("pip_free"))
         except Exception as e:
             log(f"미니창 위치 맞추기 실패: {e}")
             drag = None
